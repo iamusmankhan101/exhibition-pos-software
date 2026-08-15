@@ -41,6 +41,8 @@ const PATHS = {
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18M3.5 9h17M3.5 15h17M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
   alert: 'M12 8.5V13M12 16.5h.01M10.3 4l-7.5 13A2 2 0 0 0 4.5 20h15a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0',
   download: 'M12 3v12M7.5 10.5 12 15l4.5-4.5M4 20h16',
+  trash: 'M4 7h16M10 11v6M14 11v6M5 7l1 13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-13M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3',
+  undo: 'M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10H9',
 }
 
 export default function Icon({ name, size = 18, strokeWidth = 1.7, style, className }) {

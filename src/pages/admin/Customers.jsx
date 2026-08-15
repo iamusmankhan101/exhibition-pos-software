@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Avatar, Confirm, EmptyState, Field, Modal, StatCard } from '../../components/ui.jsx'
+import Icon from '../../components/Icon.jsx'
+import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { formatDate, uid } from '../../lib/format.js'
 import { exportCsv, exportExcel } from '../../lib/csv.js'
 
@@ -37,6 +39,9 @@ export default function Customers() {
       )
       .sort((a, b) => (b.lastPurchaseAt || '').localeCompare(a.lastPurchaseAt || ''))
   }, [state.customers, query, consentOnly])
+
+  const selection = useSelection(rows)
+  const canDelete = can('admin.settings')
 
   const consented = state.customers.filter((customer) => customer.marketingConsent).length
   const totalSpend = state.customers.reduce((sum, customer) => sum + (customer.totalSpend || 0), 0)
@@ -105,6 +110,11 @@ export default function Customers() {
           <table className="data">
             <thead>
               <tr>
+                {canDelete && (
+                  <th className="check-col">
+                    <SelectAllBox selection={selection} />
+                  </th>
+                )}
                 <th>Customer</th>
                 <th>Contact</th>
                 <th className="right">Orders</th>
@@ -116,7 +126,16 @@ export default function Customers() {
             </thead>
             <tbody>
               {rows.map((customer) => (
-                <tr key={customer.id} className="clickable" onClick={() => setViewing(customer)}>
+                <tr
+                  key={customer.id}
+                  className={`clickable ${selection.isSelected(customer.id) ? 'selected' : ''}`}
+                  onClick={() => setViewing(customer)}
+                >
+                  {canDelete && (
+                    <td className="check-col" onClick={(event) => event.stopPropagation()}>
+                      <RowBox selection={selection} id={customer.id} />
+                    </td>
+                  )}
                   <td>
                     <div className="row">
                       <Avatar name={customer.name} size={32} />
@@ -135,10 +154,19 @@ export default function Customers() {
                       {customer.marketingConsent ? 'Opted in' : 'No consent'}
                     </span>
                   </td>
-                  <td className="right" onClick={(event) => event.stopPropagation()}>
+                  <td className="right nowrap" onClick={(event) => event.stopPropagation()}>
                     <button className="btn btn-ghost btn-sm" onClick={() => setEditing(structuredClone(customer))}>
                       Edit
                     </button>
+                    {canDelete && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        title="Delete customer"
+                        onClick={() => setDeleting([customer])}
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -156,19 +184,36 @@ export default function Customers() {
             actions.toast('Customer saved', 'success')
             setEditing(null)
           }}
-          onDelete={can('admin.settings') ? () => { setDeleting(editing); setEditing(null) } : null}
+          onDelete={canDelete ? () => { setDeleting([editing]); setEditing(null) } : null}
         />
       )}
 
       {viewing && <CustomerDetail customer={viewing} onClose={() => setViewing(null)} onEdit={() => { setEditing(structuredClone(viewing)); setViewing(null) }} />}
 
+      {canDelete && (
+        <BulkBar
+          selection={selection}
+          noun="customer"
+          onDelete={() => setDeleting(rows.filter((entry) => selection.isSelected(entry.id)))}
+        />
+      )}
+
       <Confirm
         open={Boolean(deleting)}
-        title="Delete this customer?"
-        message={`${deleting?.name} will be removed from the database. Their past orders keep the name on record.`}
+        title={
+          deleting?.length === 1 ? 'Delete this customer?' : `Delete ${deleting?.length || 0} customers?`
+        }
+        message={
+          deleting?.length === 1
+            ? `${deleting[0].name} will be removed from the database, along with their purchase history and marketing consent. Past invoices keep the name that was on the sale.`
+            : 'These customers, their purchase history and their marketing consent will be removed. Past invoices keep the names that were on the sales.'
+        }
         confirmLabel="Delete"
         danger
-        onConfirm={() => actions.deleteCustomer(deleting.id)}
+        onConfirm={() => {
+          actions.deleteCustomers(deleting.map((entry) => entry.id))
+          selection.clear()
+        }}
         onClose={() => setDeleting(null)}
       />
     </div>

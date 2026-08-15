@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import QRCode from 'qrcode'
 import { useApp, useCurrency } from '../../lib/store.jsx'
-import { Confirm, EmptyState, Field, ImagePicker, Modal, StatusBadge, Thumb } from '../../components/ui.jsx'
+import { EmptyState, Field, ImagePicker, Modal, StatusBadge, Thumb } from '../../components/ui.jsx'
+import Icon from '../../components/Icon.jsx'
+import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { MAIN_LOCATION, uid } from '../../lib/format.js'
 import { getStock } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
@@ -36,6 +38,7 @@ export default function Products() {
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [labels, setLabels] = useState(null)
+  const canDelete = can('admin.settings')
 
   const categories = useMemo(
     () => ['All', ...new Set(state.products.map((product) => product.category).filter(Boolean))],
@@ -63,6 +66,8 @@ export default function Products() {
           : 0,
       }))
   }, [state, query, category, activeExhibition])
+
+  const selection = useSelection(rows, (row) => row.product.id)
 
   const exportColumns = [
     { label: 'Product', value: (row) => row.product.name },
@@ -113,6 +118,11 @@ export default function Products() {
           <table className="data">
             <thead>
               <tr>
+                {canDelete && (
+                  <th className="check-col">
+                    <SelectAllBox selection={selection} />
+                  </th>
+                )}
                 <th>Product</th>
                 <th>Category</th>
                 <th className="right">Price</th>
@@ -129,7 +139,16 @@ export default function Products() {
                 const min = Math.min(...prices)
                 const max = Math.max(...prices)
                 return (
-                  <tr key={product.id} className="clickable" onClick={() => setEditing(structuredClone(product))}>
+                  <tr
+                    key={product.id}
+                    className={`clickable ${selection.isSelected(product.id) ? 'selected' : ''}`}
+                    onClick={() => setEditing(structuredClone(product))}
+                  >
+                    {canDelete && (
+                      <td className="check-col" onClick={(event) => event.stopPropagation()}>
+                        <RowBox selection={selection} id={product.id} />
+                      </td>
+                    )}
                     <td>
                       <div className="row">
                         <Thumb src={product.image} name={product.name} style={{ width: 38, height: 38 }} />
@@ -156,10 +175,19 @@ export default function Products() {
                     <td>
                       <StatusBadge status={product.status} />
                     </td>
-                    <td className="right" onClick={(event) => event.stopPropagation()}>
+                    <td className="right nowrap" onClick={(event) => event.stopPropagation()}>
                       <button className="btn btn-ghost btn-sm" onClick={() => setLabels(product)}>
                         Labels
                       </button>
+                      {canDelete && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          title="Delete product"
+                          onClick={() => setDeleting([product])}
+                        >
+                          <Icon name="trash" size={15} />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 )
@@ -178,7 +206,7 @@ export default function Products() {
             setEditing(null)
           }}
           onDelete={() => {
-            setDeleting(editing)
+            setDeleting([editing])
             setEditing(null)
           }}
         />
@@ -186,16 +214,111 @@ export default function Products() {
 
       {labels && <LabelSheet product={labels} onClose={() => setLabels(null)} />}
 
-      <Confirm
-        open={Boolean(deleting)}
-        title="Delete this product?"
-        message={`"${deleting?.name}" and all of its variants will be removed. Past sales keep their record.`}
-        confirmLabel="Delete"
-        danger
-        onConfirm={() => actions.deleteProduct(deleting.id)}
-        onClose={() => setDeleting(null)}
-      />
+      {canDelete && (
+        <BulkBar
+          selection={selection}
+          noun="product"
+          onDelete={() => setDeleting(state.products.filter((entry) => selection.isSelected(entry.id)))}
+        />
+      )}
+
+      {deleting && (
+        <DeleteProductsModal
+          products={deleting}
+          onClose={() => setDeleting(null)}
+          onDone={() => {
+            selection.clear()
+            setDeleting(null)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/* ---------------------------------------------------------------- delete */
+
+function DeleteProductsModal({ products, onClose, onDone }) {
+  const { state, actions } = useApp()
+  const currency = useCurrency()
+
+  // Deleting a product that still has stock or sales history is usually a
+  // mistake, so show the exposure before the button is pressed.
+  const impact = useMemo(() => {
+    const variantIds = new Set(products.flatMap((p) => p.variants.map((v) => v.id)))
+    let stock = 0
+    let value = 0
+    for (const product of products) {
+      for (const variant of product.variants) {
+        for (const row of Object.values(state.inventory)) {
+          if (row.variantId === variant.id && row.quantity > 0) {
+            stock += row.quantity
+            value += row.quantity * variant.price
+          }
+        }
+      }
+    }
+    const soldIn = state.orders.filter((order) =>
+      order.items.some((item) => variantIds.has(item.variantId)),
+    ).length
+    return { stock, value, soldIn, variants: variantIds.size }
+  }, [products, state])
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={products.length === 1 ? 'Delete this product?' : `Delete ${products.length} products?`}
+      subtitle={products.length === 1 ? products[0].name : `${impact.variants} variants in total`}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={() => {
+              actions.deleteProducts(products.map((product) => product.id))
+              onDone()
+            }}
+          >
+            <Icon name="trash" size={15} />
+            Delete permanently
+          </button>
+        </>
+      }
+    >
+      <div className="danger-note">
+        This removes the {products.length === 1 ? 'product' : 'products'}, every variant, and their
+        stock balances and movement history.
+        {impact.stock > 0 && (
+          <ul>
+            <li>
+              {impact.stock} units still in stock ({currency(impact.value)} at retail) will be written off
+            </li>
+          </ul>
+        )}
+      </div>
+
+      {impact.soldIn > 0 && (
+        <p className="small muted" style={{ margin: 0 }}>
+          {impact.soldIn} past sale{impact.soldIn === 1 ? '' : 's'} include{impact.soldIn === 1 ? 's' : ''}{' '}
+          {products.length === 1 ? 'this product' : 'these products'}. Those invoices keep their line
+          items, so historical revenue reports stay correct — only the catalogue entry goes.
+        </p>
+      )}
+
+      {products.length > 1 && (
+        <div className="stack-sm" style={{ maxHeight: 180, overflowY: 'auto' }}>
+          {products.map((product) => (
+            <div key={product.id} className="row-between small" style={{ padding: '3px 0' }}>
+              <span>{product.name}</span>
+              <span className="muted">{product.variants.length} variants</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   )
 }
 

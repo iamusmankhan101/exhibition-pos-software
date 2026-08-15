@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
-import { EmptyState, Field, Modal, Tabs } from '../../components/ui.jsx'
+import { Confirm, EmptyState, Field, Modal, Tabs } from '../../components/ui.jsx'
+import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { MAIN_LOCATION, formatDate, variantLabel } from '../../lib/format.js'
 import { allVariants, getStock } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
@@ -13,6 +14,9 @@ export default function Inventory() {
   const [transfers, setTransfers] = useState({})
   const [adjusting, setAdjusting] = useState(null)
   const [direction, setDirection] = useState('toExhibition')
+  const [deletingMovements, setDeletingMovements] = useState(null)
+  const [deletingStock, setDeletingStock] = useState(null)
+  const canDelete = can('admin.settings')
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -78,6 +82,9 @@ export default function Inventory() {
       .slice(0, 300)
   }, [state, query])
 
+  const stockSelection = useSelection(rows, (row) => row.key)
+  const movementSelection = useSelection(movements, (movement) => movement.id)
+
   const locationName = (id) =>
     id === MAIN_LOCATION ? 'Main warehouse' : state.exhibitions.find((entry) => entry.id === id)?.name || id
 
@@ -142,6 +149,11 @@ export default function Inventory() {
               <table className="data">
                 <thead>
                   <tr>
+                    {canDelete && (
+                      <th className="check-col">
+                        <SelectAllBox selection={stockSelection} />
+                      </th>
+                    )}
                     <th>Product</th>
                     <th>SKU</th>
                     <th className="right">Warehouse</th>
@@ -156,7 +168,12 @@ export default function Inventory() {
                   {rows.map((row) => {
                     const low = row.exhibition <= (row.variant.minStock ?? state.settings.lowStockThreshold)
                     return (
-                      <tr key={row.key}>
+                      <tr key={row.key} className={stockSelection.isSelected(row.key) ? 'selected' : ''}>
+                        {canDelete && (
+                          <td className="check-col">
+                            <RowBox selection={stockSelection} id={row.key} />
+                          </td>
+                        )}
                         <td>
                           <div style={{ fontWeight: 600 }}>{row.product.name}</div>
                           <div className="small muted">{variantLabel(row.variant)}</div>
@@ -201,6 +218,11 @@ export default function Inventory() {
           <table className="data">
             <thead>
               <tr>
+                {canDelete && (
+                  <th className="check-col">
+                    <SelectAllBox selection={movementSelection} />
+                  </th>
+                )}
                 <th>When</th>
                 <th>Product</th>
                 <th>Location</th>
@@ -212,7 +234,12 @@ export default function Inventory() {
             </thead>
             <tbody>
               {movements.map((movement) => (
-                <tr key={movement.id}>
+                <tr key={movement.id} className={movementSelection.isSelected(movement.id) ? 'selected' : ''}>
+                  {canDelete && (
+                    <td className="check-col">
+                      <RowBox selection={movementSelection} id={movement.id} />
+                    </td>
+                  )}
                   <td className="small nowrap">{formatDate(movement.createdAt, true)}</td>
                   <td>
                     <div style={{ fontWeight: 600 }}>{movement.product.name}</div>
@@ -238,6 +265,46 @@ export default function Inventory() {
         </div>
       )}
 
+      {canDelete && tab === 'movements' && (
+        <BulkBar
+          selection={movementSelection}
+          noun="log entry"
+          onDelete={() => setDeletingMovements(movementSelection.ids)}
+        />
+      )}
+
+      {canDelete && tab === 'levels' && (
+        <BulkBar
+          selection={stockSelection}
+          noun="product"
+          onDelete={() => setDeletingStock(rows.filter((row) => stockSelection.isSelected(row.key)))}
+        />
+      )}
+
+      <Confirm
+        open={Boolean(deletingMovements)}
+        title={`Delete ${deletingMovements?.length || 0} log entries?`}
+        message="This removes history from the movement log only — current stock balances are not recalculated, so the running balances on older rows may no longer add up."
+        confirmLabel="Delete entries"
+        danger
+        onConfirm={() => {
+          actions.deleteMovements(deletingMovements)
+          movementSelection.clear()
+        }}
+        onClose={() => setDeletingMovements(null)}
+      />
+
+      {deletingStock && (
+        <ClearStockModal
+          rows={deletingStock}
+          onClose={() => setDeletingStock(null)}
+          onDone={() => {
+            stockSelection.clear()
+            setDeletingStock(null)
+          }}
+        />
+      )}
+
       {adjusting && (
         <AdjustModal
           row={adjusting}
@@ -250,6 +317,104 @@ export default function Inventory() {
         />
       )}
     </div>
+  )
+}
+
+/**
+ * Bulk clear-down for exhibition stock: either send it back to the warehouse or
+ * write it off. Both are recorded as movements so the numbers stay explainable.
+ */
+function ClearStockModal({ rows, onClose, onDone }) {
+  const { activeExhibition, actions } = useApp()
+  const currency = useCurrency()
+  const [mode, setMode] = useState('return')
+
+  const affected = rows.filter((row) => row.exhibition > 0)
+  const units = affected.reduce((sum, row) => sum + row.exhibition, 0)
+  const value = affected.reduce((sum, row) => sum + row.exhibition * row.variant.price, 0)
+
+  const run = () => {
+    for (const row of affected) {
+      if (mode === 'return') {
+        actions.transferStock({
+          variantId: row.variant.id,
+          fromLocation: activeExhibition.id,
+          toLocation: MAIN_LOCATION,
+          quantity: row.exhibition,
+        })
+      } else {
+        actions.adjustStock({
+          variantId: row.variant.id,
+          locationId: activeExhibition.id,
+          quantity: 0,
+          note: 'Stock cleared by admin',
+        })
+      }
+    }
+    actions.toast(
+      mode === 'return'
+        ? `${units} items returned to the warehouse`
+        : `${units} items written off`,
+      'warn',
+    )
+    onDone()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Clear exhibition stock"
+      subtitle={`${rows.length} product${rows.length === 1 ? '' : 's'} selected`}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className={`btn ${mode === 'return' ? 'btn-primary' : 'btn-danger'}`} disabled={!units} onClick={run}>
+            {mode === 'return' ? `Return ${units} items` : `Write off ${units} items`}
+          </button>
+        </>
+      }
+    >
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button className={mode === 'return' ? 'active' : ''} onClick={() => setMode('return')}>
+          Return to warehouse
+        </button>
+        <button className={mode === 'writeoff' ? 'active' : ''} onClick={() => setMode('writeoff')}>
+          Write off
+        </button>
+      </div>
+
+      {mode === 'return' ? (
+        <p className="small muted" style={{ margin: 0 }}>
+          Moves the stock out of {activeExhibition?.name} and back into the main warehouse. Nothing is
+          lost — this is the usual way to strip a stand at the end of an event.
+        </p>
+      ) : (
+        <div className="danger-note">
+          Writes the stock down to zero and it does not come back. Use this only for damaged, lost or
+          stolen goods — {currency(value)} of stock at retail.
+        </div>
+      )}
+
+      {units === 0 ? (
+        <p className="small muted" style={{ margin: 0 }}>
+          None of the selected products have stock at this exhibition.
+        </p>
+      ) : (
+        <div className="stack-sm" style={{ maxHeight: 200, overflowY: 'auto' }}>
+          {affected.map((row) => (
+            <div key={row.key} className="row-between small" style={{ padding: '3px 0' }}>
+              <span>
+                {row.product.name} <span className="muted">{variantLabel(row.variant)}</span>
+              </span>
+              <span className="mono">{row.exhibition}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   )
 }
 

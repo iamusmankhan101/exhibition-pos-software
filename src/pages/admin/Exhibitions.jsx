@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { EmptyState, Field, Modal, StatCard, StatusBadge } from '../../components/ui.jsx'
+import Icon from '../../components/Icon.jsx'
 import { formatDate, uid } from '../../lib/format.js'
 import { getStock } from '../../lib/domain.js'
 import { buildClosingReport, filterOrders, salesSummary } from '../../lib/analytics.js'
@@ -20,11 +21,12 @@ const blank = () => ({
 })
 
 export default function Exhibitions() {
-  const { state, session, actions } = useApp()
+  const { state, session, actions, can } = useApp()
   const currency = useCurrency()
   const [editing, setEditing] = useState(null)
   const [closing, setClosing] = useState(null)
   const [viewing, setViewing] = useState(null)
+  const [deleting, setDeleting] = useState(null)
 
   const rows = useMemo(
     () =>
@@ -114,6 +116,16 @@ export default function Exhibitions() {
                     </button>
                   )
                 )}
+                {can('admin.settings') && (
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    title="Delete exhibition"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => setDeleting({ exhibition, summary, stock })}
+                  >
+                    <Icon name="trash" size={15} />
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -133,6 +145,7 @@ export default function Exhibitions() {
 
       {closing && <CloseModal exhibition={closing} onClose={() => setClosing(null)} onView={setViewing} />}
       {viewing && <ReportModal report={viewing} onClose={() => setViewing(null)} />}
+      {deleting && <DeleteExhibitionModal {...deleting} onClose={() => setDeleting(null)} />}
     </div>
   )
 }
@@ -243,6 +256,100 @@ function ExhibitionEditor({ exhibition, onClose, onSave }) {
           onChange={(event) => patch({ notes: event.target.value })}
         />
       </Field>
+    </Modal>
+  )
+}
+
+/* ---------------------------------------------------------------- delete */
+
+function DeleteExhibitionModal({ exhibition, summary, stock, onClose }) {
+  const { actions } = useApp()
+  const currency = useCurrency()
+  const [returnStock, setReturnStock] = useState(true)
+  const [deleteSales, setDeleteSales] = useState(true)
+  const [confirmText, setConfirmText] = useState('')
+
+  // An exhibition with takings is a big thing to lose, so make it deliberate.
+  const needsTyping = summary.count > 0
+  const armed = !needsTyping || confirmText.trim().toLowerCase() === 'delete'
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Delete this exhibition?"
+      subtitle={exhibition.name}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-danger"
+            disabled={!armed}
+            onClick={() => {
+              actions.deleteExhibition(exhibition.id, { returnStock, deleteSales })
+              onClose()
+            }}
+          >
+            <Icon name="trash" size={15} />
+            Delete permanently
+          </button>
+        </>
+      }
+    >
+      <div className="danger-note">
+        This removes the exhibition and its stock records for good.
+        <ul>
+          <li>{summary.count} sales worth {currency(summary.net)}</li>
+          <li>{stock} items currently allocated to the stand</li>
+          <li>All stock movement history for this location</li>
+        </ul>
+      </div>
+
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={returnStock}
+          onChange={(event) => setReturnStock(event.target.checked)}
+        />
+        <span>
+          Return {stock} allocated items to the main warehouse
+          <div className="small muted">Turn this off only if the stock is genuinely gone.</div>
+        </span>
+      </label>
+
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={deleteSales}
+          onChange={(event) => setDeleteSales(event.target.checked)}
+        />
+        <span>
+          Delete the {summary.count} sales recorded here
+          <div className="small muted">
+            If you leave this off the invoices survive but point at an exhibition that no longer
+            exists, so reports will show them as unassigned.
+          </div>
+        </span>
+      </label>
+
+      {needsTyping && (
+        <Field label="Type DELETE to confirm">
+          <input
+            className="input"
+            value={confirmText}
+            onChange={(event) => setConfirmText(event.target.value)}
+            placeholder="DELETE"
+            autoComplete="off"
+          />
+        </Field>
+      )}
+
+      <p className="small muted" style={{ margin: 0 }}>
+        If you just want to finish trading, use <strong>Close exhibition</strong> instead — it keeps
+        the record and produces the final report.
+      </p>
     </Modal>
   )
 }

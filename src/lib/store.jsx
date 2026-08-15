@@ -11,6 +11,10 @@ import {
   MOVEMENT_TYPES,
   applyStockChange,
   createOrder,
+  deleteCustomers,
+  deleteExhibition,
+  deleteOrders,
+  deleteProducts,
   getStock,
   refundOrder,
   settlePayment,
@@ -41,6 +45,8 @@ export const ROLE_PERMISSIONS = {
     'refund',
     'stock.adjust',
   ],
+  // Destructive record deletion is deliberately admin-only: it rewrites history
+  // that reports and the audit trail depend on.
   salesperson: ['pos', 'admin.customers', 'sales.own'],
 }
 
@@ -292,6 +298,51 @@ export function AppProvider({ children }) {
       if (!stateRef.current) throw new Error('Data is still loading.')
     }
 
+    const removeProducts = (productIds) => {
+      let removed = 0
+      setState((current) => {
+        const names = current.products
+          .filter((entry) => productIds.includes(entry.id))
+          .map((entry) => entry.name)
+        const result = deleteProducts(current, productIds)
+        removed = result.deleted
+        if (!removed) return current
+        const draft = withAudit(
+          result.state,
+          removed === 1 ? 'Deleted product' : `Deleted ${removed} products`,
+          names.join(', ').slice(0, 200),
+          'product',
+          productIds.join(','),
+        )
+        return withOutbox(draft, 'product.delete', uid('del'), { productIds })
+      })
+      if (removed) {
+        toast(`${removed} product${removed === 1 ? '' : 's'} deleted with their stock records`, 'warn')
+      }
+      return removed
+    }
+
+    const removeCustomers = (customerIds) => {
+      let removed = 0
+      setState((current) => {
+        const names = current.customers
+          .filter((entry) => customerIds.includes(entry.id))
+          .map((entry) => entry.name)
+        removed = names.length
+        if (!removed) return current
+        const draft = withAudit(
+          deleteCustomers(current, customerIds),
+          removed === 1 ? 'Deleted customer' : `Deleted ${removed} customers`,
+          names.join(', ').slice(0, 200),
+          'customer',
+          customerIds.join(','),
+        )
+        return withOutbox(draft, 'customer.delete', uid('del'), { customerIds })
+      })
+      if (removed) toast(`${removed} customer${removed === 1 ? '' : 's'} deleted`, 'warn')
+      return removed
+    }
+
     return {
       /* auth */
       login(userId, pin) {
@@ -352,20 +403,8 @@ export function AppProvider({ children }) {
         toast(`Saved "${product.name}"`, 'success')
       },
 
-      deleteProduct(productId) {
-        setState((current) => {
-          const product = current.products.find((entry) => entry.id === productId)
-          const draft = withAudit(
-            { ...current, products: current.products.filter((entry) => entry.id !== productId) },
-            'Deleted product',
-            product?.name || productId,
-            'product',
-            productId,
-          )
-          return withOutbox(draft, 'product.delete', productId, { productId })
-        })
-        toast('Product deleted', 'warn')
-      },
+      deleteProduct: (productId) => removeProducts([productId]),
+      deleteProducts: removeProducts,
 
       /* inventory */
       transferStock({ variantId, fromLocation, toLocation, quantity }) {
@@ -438,16 +477,70 @@ export function AppProvider({ children }) {
         toast(`Saved "${exhibition.name}"`, 'success')
       },
 
-      deleteExhibition(exhibitionId) {
-        setState((current) =>
-          withAudit(
-            { ...current, exhibitions: current.exhibitions.filter((entry) => entry.id !== exhibitionId) },
+      deleteExhibition(exhibitionId, { returnStock = true, deleteSales = true } = {}) {
+        // Resolve the fallback before mutating: setState updaters are deferred,
+        // so stateRef would still be stale immediately after the call.
+        const fallback = stateRef.current?.exhibitions.find((entry) => entry.id !== exhibitionId)
+        setState((current) => {
+          const exhibition = current.exhibitions.find((entry) => entry.id === exhibitionId)
+          const salesCount = current.orders.filter((order) => order.exhibitionId === exhibitionId).length
+          const next = deleteExhibition(current, { exhibitionId, returnStock, deleteSales })
+          const draft = withAudit(
+            next,
             'Deleted exhibition',
-            exhibitionId,
+            `${exhibition?.name || exhibitionId} · ${
+              deleteSales ? `${salesCount} sales removed` : 'sales kept'
+            } · stock ${returnStock ? 'returned to warehouse' : 'discarded'}`,
             'exhibition',
             exhibitionId,
-          ),
-        )
+          )
+          return withOutbox(draft, 'exhibition.delete', uid('del'), { exhibitionId, returnStock, deleteSales })
+        })
+        // The active exhibition must not point at something that no longer exists.
+        if (session.exhibitionId === exhibitionId) {
+          updateSession({ exhibitionId: fallback?.id || null })
+        }
+        toast('Exhibition deleted', 'warn')
+      },
+
+      deleteOrders(orderIds, { restoreStock = true } = {}) {
+        let removed = 0
+        let restored = 0
+        setState((current) => {
+          const invoices = current.orders
+            .filter((order) => orderIds.includes(order.id))
+            .map((order) => order.invoiceNo)
+          const result = deleteOrders(current, { orderIds, restoreStock })
+          removed = result.deleted
+          restored = result.restored
+          if (!removed) return current
+          let next = withNotification(
+            result.state,
+            'refund',
+            removed === 1 ? 'Sale deleted' : `${removed} sales deleted`,
+            `${invoices.slice(0, 5).join(', ')}${invoices.length > 5 ? '…' : ''}${
+              restored ? ` · ${restored} items returned to stock` : ''
+            }`,
+            'danger',
+          )
+          next = withAudit(
+            next,
+            removed === 1 ? 'Deleted sale' : `Deleted ${removed} sales`,
+            `${invoices.join(', ').slice(0, 220)} · ${
+              restoreStock ? `${restored} items restored` : 'stock not restored'
+            }`,
+            'order',
+            orderIds.join(','),
+          )
+          return withOutbox(next, 'order.delete', uid('del'), { orderIds, restoreStock })
+        })
+        if (removed) {
+          toast(
+            `${removed} sale${removed === 1 ? '' : 's'} deleted${restored ? ` · ${restored} items back in stock` : ''}`,
+            'warn',
+          )
+        }
+        return removed
       },
 
       /** Freezes the closing report and returns unsold stock to the warehouse. */
@@ -522,17 +615,25 @@ export function AppProvider({ children }) {
         return saved
       },
 
-      deleteCustomer(customerId) {
-        setState((current) =>
-          withAudit(
-            { ...current, customers: current.customers.filter((entry) => entry.id !== customerId) },
-            'Deleted customer',
-            customerId,
-            'customer',
-            customerId,
-          ),
-        )
-        toast('Customer deleted', 'warn')
+      deleteCustomer: (customerId) => removeCustomers([customerId]),
+      deleteCustomers: removeCustomers,
+
+      /** Trims movement log rows. Balances are left untouched by design. */
+      deleteMovements(movementIds) {
+        let removed = 0
+        setState((current) => {
+          removed = current.movements.filter((entry) => movementIds.includes(entry.id)).length
+          if (!removed) return current
+          return withAudit(
+            { ...current, movements: current.movements.filter((entry) => !movementIds.includes(entry.id)) },
+            `Deleted ${removed} stock movement${removed === 1 ? '' : 's'}`,
+            'Log entries removed; stock balances unchanged',
+            'inventory',
+            movementIds.join(','),
+          )
+        })
+        if (removed) toast(`${removed} movement${removed === 1 ? '' : 's'} removed from the log`, 'warn')
+        return removed
       },
 
       /* sales */
@@ -797,7 +898,19 @@ export function AppProvider({ children }) {
 
       toast,
     }
-  }, [setState, withAudit, withNotification, withOutbox, toast, user, deviceId, deviceCode, updateSession, persist])
+  }, [
+    setState,
+    withAudit,
+    withNotification,
+    withOutbox,
+    toast,
+    user,
+    session.exhibitionId,
+    deviceId,
+    deviceCode,
+    updateSession,
+    persist,
+  ])
 
   const value = useMemo(
     () => ({

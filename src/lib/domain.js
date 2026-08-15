@@ -464,6 +464,144 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
   return { state: next, refundAmount: cashRefund, balanceCleared: balanceReduction, userName }
 }
 
+/* ---------------------------------------------------------------- deletes */
+
+/** Writes a stock balance without logging a movement (used when erasing history). */
+function setStockSilently(state, locationId, variantId, delta) {
+  const key = inventoryKey(locationId, variantId)
+  const current = state.inventory[key]?.quantity ?? 0
+  return {
+    ...state,
+    inventory: {
+      ...state.inventory,
+      [key]: { locationId, variantId, quantity: money(current + delta), updatedAt: nowIso() },
+    },
+  }
+}
+
+/**
+ * Permanently removes orders together with their payments and stock movements.
+ *
+ * Anything the customer kept is put back on the shelf, otherwise deleting a sale
+ * would quietly lose that stock. Cancelled and fully returned orders have
+ * already given their stock back, so they are not credited twice.
+ */
+export function deleteOrders(state, { orderIds, restoreStock = true }) {
+  const ids = new Set(orderIds)
+  const targets = state.orders.filter((order) => ids.has(order.id))
+  if (!targets.length) return { state, deleted: 0, restored: 0 }
+
+  let next = state
+  let restored = 0
+  const invoices = new Set(targets.map((order) => order.invoiceNo))
+
+  for (const order of targets) {
+    if (restoreStock && order.status !== 'Cancelled') {
+      for (const item of order.items) {
+        const outstanding = item.quantity - (item.returnedQuantity || 0)
+        if (outstanding > 0) {
+          next = setStockSilently(next, order.exhibitionId, item.variantId, outstanding)
+          restored += outstanding
+        }
+      }
+    }
+
+    if (order.customerId) {
+      const collected = money((order.amountPaid ?? order.total) - (order.refundedAmount || 0))
+      next = {
+        ...next,
+        customers: next.customers.map((customer) =>
+          customer.id === order.customerId
+            ? {
+                ...customer,
+                totalOrders: Math.max(0, (customer.totalOrders || 0) - 1),
+                totalSpend: money(Math.max(0, (customer.totalSpend || 0) - collected)),
+              }
+            : customer,
+        ),
+      }
+    }
+  }
+
+  return {
+    state: {
+      ...next,
+      orders: next.orders.filter((order) => !ids.has(order.id)),
+      payments: next.payments.filter((payment) => !ids.has(payment.orderId)),
+      movements: next.movements.filter((movement) => !invoices.has(movement.reference)),
+    },
+    deleted: targets.length,
+    restored,
+  }
+}
+
+/** Removes products along with their stock balances and movement history. */
+export function deleteProducts(state, productIds) {
+  const ids = new Set(productIds)
+  const targets = state.products.filter((product) => ids.has(product.id))
+  if (!targets.length) return { state, deleted: 0 }
+
+  const variantIds = new Set(targets.flatMap((product) => product.variants.map((variant) => variant.id)))
+
+  const inventory = Object.fromEntries(
+    Object.entries(state.inventory).filter(([, row]) => !variantIds.has(row.variantId)),
+  )
+
+  return {
+    state: {
+      ...state,
+      products: state.products.filter((product) => !ids.has(product.id)),
+      inventory,
+      movements: state.movements.filter((movement) => !variantIds.has(movement.variantId)),
+    },
+    deleted: targets.length,
+  }
+}
+
+/** Deletes an exhibition; its stock can be returned to the warehouse first. */
+export function deleteExhibition(state, { exhibitionId, returnStock = true, deleteSales = true }) {
+  let next = state
+
+  if (returnStock) {
+    for (const product of state.products) {
+      for (const variant of product.variants) {
+        const remaining = getStock(next, exhibitionId, variant.id)
+        if (remaining > 0) {
+          next = setStockSilently(next, exhibitionId, variant.id, -remaining)
+          next = setStockSilently(next, MAIN_LOCATION, variant.id, remaining)
+        }
+      }
+    }
+  }
+
+  if (deleteSales) {
+    const orderIds = next.orders.filter((order) => order.exhibitionId === exhibitionId).map((o) => o.id)
+    // Stock has already been handled above, so do not credit it twice.
+    next = deleteOrders(next, { orderIds, restoreStock: false }).state
+  }
+
+  const inventory = Object.fromEntries(
+    Object.entries(next.inventory).filter(([, row]) => row.locationId !== exhibitionId),
+  )
+
+  return {
+    ...next,
+    inventory,
+    exhibitions: next.exhibitions.filter((entry) => entry.id !== exhibitionId),
+    movements: next.movements.filter((movement) => movement.locationId !== exhibitionId),
+  }
+}
+
+/** Removes customers; their past orders keep the name that was on the sale. */
+export function deleteCustomers(state, customerIds) {
+  const ids = new Set(customerIds)
+  return {
+    ...state,
+    customers: state.customers.filter((customer) => !ids.has(customer.id)),
+    orders: state.orders.map((order) => (ids.has(order.customerId) ? { ...order, customerId: null } : order)),
+  }
+}
+
 /* ------------------------------------------------------------- selections */
 
 export function exhibitionStockRows(state, exhibitionId) {

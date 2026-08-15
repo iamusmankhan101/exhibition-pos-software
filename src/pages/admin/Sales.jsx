@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Confirm, EmptyState, Field, Modal, StatusBadge } from '../../components/ui.jsx'
+import Icon from '../../components/Icon.jsx'
+import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { formatDate, money } from '../../lib/format.js'
 import { filterOrders, salesSummary } from '../../lib/analytics.js'
 import { exportCsv, exportExcel, exportPdf } from '../../lib/csv.js'
@@ -21,8 +23,10 @@ export default function Sales() {
   const [refunding, setRefunding] = useState(null)
   const [cancelling, setCancelling] = useState(null)
   const [settling, setSettling] = useState(null)
+  const [deleting, setDeleting] = useState(null)
 
   const ownOnly = !can('admin.sales')
+  const canDelete = can('admin.settings')
 
   const orders = useMemo(() => {
     const base = filterOrders(state, {
@@ -46,6 +50,7 @@ export default function Sales() {
 
   const summary = useMemo(() => salesSummary(orders), [orders])
   const selected = orderId ? state.orders.find((entry) => entry.id === orderId) : null
+  const selection = useSelection(orders)
 
   const columns = [
     { label: 'Invoice', value: (order) => order.invoiceNo },
@@ -150,6 +155,11 @@ export default function Sales() {
           <table className="data">
             <thead>
               <tr>
+                {canDelete && (
+                  <th className="check-col">
+                    <SelectAllBox selection={selection} />
+                  </th>
+                )}
                 <th>Invoice</th>
                 <th>Date</th>
                 <th>Customer</th>
@@ -159,11 +169,21 @@ export default function Sales() {
                 <th className="right">Total</th>
                 <th>Payment</th>
                 <th>Status</th>
+                {canDelete && <th />}
               </tr>
             </thead>
             <tbody>
               {orders.map((order) => (
-                <tr key={order.id} className="clickable" onClick={() => navigate(`/admin/sales/${order.id}`)}>
+                <tr
+                  key={order.id}
+                  className={`clickable ${selection.isSelected(order.id) ? 'selected' : ''}`}
+                  onClick={() => navigate(`/admin/sales/${order.id}`)}
+                >
+                  {canDelete && (
+                    <td className="check-col" onClick={(event) => event.stopPropagation()}>
+                      <RowBox selection={selection} id={order.id} />
+                    </td>
+                  )}
                   <td className="mono small">{order.invoiceNo}</td>
                   <td className="small nowrap">{formatDate(order.createdAt, true)}</td>
                   <td>{order.customerName}</td>
@@ -182,11 +202,42 @@ export default function Sales() {
                   <td>
                     <StatusBadge status={order.status} />
                   </td>
+                  {canDelete && (
+                    <td className="right" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        title="Delete sale"
+                        onClick={() => setDeleting([order])}
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {canDelete && (
+        <BulkBar
+          selection={selection}
+          noun="sale"
+          onDelete={() => setDeleting(orders.filter((order) => selection.isSelected(order.id)))}
+        />
+      )}
+
+      {deleting && (
+        <DeleteSalesModal
+          orders={deleting}
+          onClose={() => setDeleting(null)}
+          onDone={() => {
+            selection.clear()
+            setDeleting(null)
+            if (orderId) navigate('/admin/sales')
+          }}
+        />
       )}
 
       {selected && (
@@ -196,6 +247,7 @@ export default function Sales() {
           onRefund={() => setRefunding(selected)}
           onCancel={() => setCancelling(selected)}
           onSettle={() => setSettling(selected)}
+          onDelete={() => setDeleting([selected])}
         />
       )}
 
@@ -217,7 +269,7 @@ export default function Sales() {
 
 /* ---------------------------------------------------------------- detail */
 
-function OrderDetail({ order, onClose, onRefund, onCancel, onSettle }) {
+function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete }) {
   const { state, can } = useApp()
   const currency = useCurrency()
   const exhibition = state.exhibitions.find((entry) => entry.id === order.exhibitionId)
@@ -247,8 +299,14 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle }) {
             </button>
           )}
           {can('refund') && order.status === 'Completed' && (
-            <button className="btn btn-danger" onClick={onCancel}>
+            <button className="btn" onClick={onCancel}>
               Cancel sale
+            </button>
+          )}
+          {can('admin.settings') && (
+            <button className="btn btn-danger" onClick={onDelete}>
+              <Icon name="trash" size={15} />
+              Delete
             </button>
           )}
         </>
@@ -352,6 +410,92 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle }) {
       </div>
 
       {order.note && <p className="small muted">Note: {order.note}</p>}
+    </Modal>
+  )
+}
+
+/* ---------------------------------------------------------------- delete */
+
+function DeleteSalesModal({ orders, onClose, onDone }) {
+  const { actions } = useApp()
+  const currency = useCurrency()
+  const [restoreStock, setRestoreStock] = useState(true)
+
+  const revenue = orders.reduce((sum, order) => sum + (order.status === 'Cancelled' ? 0 : order.total), 0)
+  const units = orders.reduce(
+    (sum, order) =>
+      sum +
+      (order.status === 'Cancelled'
+        ? 0
+        : order.items.reduce((n, item) => n + (item.quantity - (item.returnedQuantity || 0)), 0)),
+    0,
+  )
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={orders.length === 1 ? 'Delete this sale?' : `Delete ${orders.length} sales?`}
+      subtitle={orders.length === 1 ? orders[0].invoiceNo : 'This cannot be undone'}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={() => {
+              actions.deleteOrders(orders.map((order) => order.id), { restoreStock })
+              onDone()
+            }}
+          >
+            <Icon name="trash" size={15} />
+            Delete permanently
+          </button>
+        </>
+      }
+    >
+      <div className="danger-note">
+        Deleting is permanent and rewrites your history. These sales will vanish from every report,
+        the payment breakdown and salesperson performance.
+        <ul>
+          <li>{currency(revenue)} removed from recorded sales</li>
+          <li>Payment and refund records deleted</li>
+          <li>Customer order counts and lifetime spend reduced</li>
+        </ul>
+      </div>
+
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={restoreStock}
+          onChange={(event) => setRestoreStock(event.target.checked)}
+        />
+        <span>
+          Return {units} unsold item{units === 1 ? '' : 's'} to exhibition stock
+          <div className="small muted">
+            Leave this on unless the goods really did leave with the customer — otherwise the stock
+            count will be short.
+          </div>
+        </span>
+      </label>
+
+      {orders.length > 1 && (
+        <div className="stack-sm" style={{ maxHeight: 190, overflowY: 'auto' }}>
+          {orders.slice(0, 40).map((order) => (
+            <div key={order.id} className="row-between small" style={{ padding: '4px 0' }}>
+              <span className="mono muted">{order.invoiceNo}</span>
+              <span>{order.customerName}</span>
+              <span className="mono">{currency(order.total)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="small muted" style={{ margin: 0 }}>
+        Prefer <strong>Cancel sale</strong> if you only want to reverse the transaction — it keeps the
+        record and the audit trail intact.
+      </p>
     </Modal>
   )
 }
