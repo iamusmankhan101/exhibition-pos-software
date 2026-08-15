@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
-import { EmptyState, StatusBadge, Thumb } from '../../components/ui.jsx'
+import { EmptyState, StatCard, StatusBadge, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import BarChart from '../../components/BarChart.jsx'
 import { formatDate, formatNumber, formatTime, money } from '../../lib/format.js'
@@ -214,6 +214,29 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* ------------------------------------------------------ key metrics */}
+      <div className="grid grid-4">
+        <StatCard
+          label="Transactions"
+          value={formatNumber(summary.count)}
+          meta={summary.cancelled ? `${summary.cancelled} cancelled` : 'None cancelled'}
+          delta={ordersDelta}
+        />
+        <StatCard label="Items sold" value={formatNumber(summary.itemsSold)} />
+        <StatCard label="Average order" value={currency(summary.averageOrder)} />
+        <StatCard
+          label="Discounts given"
+          value={currency(summary.discounts)}
+          meta={
+            summary.refunds > 0 || summary.outstanding > 0
+              ? `${currency(summary.refunds)} refunded${
+                  summary.outstanding > 0 ? ` · ${currency(summary.outstanding)} outstanding` : ''
+                }`
+              : 'No refunds'
+          }
+        />
+      </div>
+
       {/* ---------------------------------------------- payments + chart */}
       <div className="grid grid-split">
         <div className="card">
@@ -362,6 +385,57 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* --------------------------------------------------------- low stock */}
+      {lowStock.length > 0 && (
+        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+          <div className="row-between wrap" style={{ padding: '16px 18px' }}>
+            <div>
+              <div className="card-title">Low &amp; out of stock</div>
+              <div className="card-sub">{activeExhibition?.name}</div>
+            </div>
+            <Link className="btn btn-sm" to="/admin/inventory">
+              Restock
+              <Icon name="chevronRight" size={14} />
+            </Link>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>SKU</th>
+                  <th className="right">At exhibition</th>
+                  <th className="right">In warehouse</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lowStock.slice(0, 8).map((row) => (
+                  <tr key={row.key}>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{row.product.name}</div>
+                      <div className="small muted">
+                        {[row.variant.color, row.variant.size].filter(Boolean).join(' · ')}
+                      </div>
+                    </td>
+                    <td className="mono small muted">{row.variant.sku}</td>
+                    <td className="right mono" style={{ fontWeight: 650 }}>
+                      {row.quantity}
+                    </td>
+                    <td className="right mono">{row.mainStock}</td>
+                    <td>
+                      <span className={`badge ${row.quantity <= 0 ? 'badge-danger' : 'badge-warn'}`}>
+                        {row.quantity <= 0 ? 'Out of stock' : 'Low stock'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ----------------------------------------------- recent activities */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>

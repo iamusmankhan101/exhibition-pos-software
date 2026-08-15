@@ -38,8 +38,15 @@ npm run preview   # serve the build on the local network
 ## What it does
 
 **Point of sale** — camera barcode/QR scanning (EAN, UPC, Code 128/39, ITF, QR), product search,
-category filters, variant picker, cart with quantity steppers, and a three-step checkout
-(customer → discount → payment) with cash-tendered change calculation.
+category filters, variant picker, and a cart with quantity steppers and per-item discounts. Checkout
+runs customer → discount → payment, with cash-tendered change calculation. Discount limits are
+enforced per salesperson across item and order discounts combined, so one cannot be used to dodge
+the other.
+
+**Part payments** — a sale can be taken with only some of the money received. The order is saved as
+Pending with a balance due, stock still leaves with the customer, and the remainder is settled later
+from the Sales page. Returns against an unpaid order clear the outstanding balance first and only
+refund cash for what was actually handed over.
 
 **Inventory** — stock is held per location. The main warehouse and each exhibition have separate
 balances, so stall sales never touch warehouse stock. Transfers move stock between them and every
@@ -50,9 +57,14 @@ enabled per business, in which case negative stock is flagged for review.
 lifetime spend. Marketing consent is stored separately from transactional contact, and the
 "opted in only" export exists so campaigns cannot accidentally include people who never agreed.
 
-**Receipts** — branded digital invoices delivered by WhatsApp, SMS, email or an on-screen QR code.
-Receipt links carry a compact payload in the URL fragment, so a customer scanning the QR sees a
-fully rendered receipt on their own phone with no server involved.
+**Receipts and invoices** — branded digital receipts delivered by WhatsApp, SMS, email or an
+on-screen QR code. Receipt links carry a compact payload in the URL fragment, so a customer scanning
+the QR sees a fully rendered receipt on their own phone with no server involved. A proper PDF
+invoice is generated on device and can be handed to the OS share sheet, which is what lets a phone
+attach it to an email or WhatsApp message.
+
+**Invoice design** — accent colour, paper size and which fields appear (logo, customer contact,
+exhibition, salesperson, VAT breakdown, QR, terms), with a live preview and a downloadable sample.
 
 **Reporting** — dashboard with sales trend, payment split and staff ranking; sales, inventory,
 payment, staff and customer reports, each exportable to CSV, Excel or PDF; and an exhibition
@@ -105,8 +117,11 @@ This is a complete front end with a local persistence layer, not a deployed mult
   Until then, two physical devices hold separate datasets.
 - **Camera needs a secure context.** `getUserMedia` requires HTTPS or `localhost`. Over a plain LAN
   IP the scanner falls back to manual code entry.
-- **PDF export goes through the browser print dialog** ("Save as PDF") rather than generating a file
-  server-side.
+- **Email attachment depends on the device.** The PDF is real and generated locally, but a browser
+  cannot attach a file to a `mailto:` link. On phones the share sheet attaches it properly; on
+  desktop it downloads for the user to attach. Automatic send needs a server-side mailer.
+- **Failed-payment notifications** are the one alert type from the spec that is not implemented —
+  with no payment gateway there is nothing that can fail.
 - **PIN authentication** suits shared stall devices; it is not a substitute for real accounts once a
   server exists.
 

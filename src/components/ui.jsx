@@ -49,11 +49,20 @@ export function Field({ label, hint, children }) {
   )
 }
 
-export function StatCard({ label, value, meta, accent = false }) {
+export function StatCard({ label, value, meta, accent = false, delta = null }) {
+  const up = delta !== null && delta !== undefined && delta >= 0
   return (
     <div className={`stat ${accent ? 'stat-accent' : ''}`}>
       <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <div className="stat-value">{value}</div>
+        {delta !== null && delta !== undefined && (
+          <span className={`delta ${up ? '' : 'down'}`}>
+            {up ? '+' : ''}
+            {delta.toFixed(1)}% {up ? '↑' : '↓'}
+          </span>
+        )}
+      </div>
       {meta && <div className="stat-meta">{meta}</div>}
     </div>
   )

@@ -32,6 +32,8 @@ export function salesSummary(orders) {
   const tax = money(live.reduce((sum, order) => sum + order.tax, 0))
   const refunds = money(live.reduce((sum, order) => sum + (order.refundedAmount || 0), 0))
   const net = money(live.reduce((sum, order) => sum + order.total, 0) - refunds)
+  // Invoiced but not yet collected (part-paid / pending orders).
+  const outstanding = money(live.reduce((sum, order) => sum + (order.balanceDue || 0), 0))
   const itemsSold = live.reduce(
     (sum, order) => sum + order.items.reduce((n, item) => n + item.quantity - (item.returnedQuantity || 0), 0),
     0,
@@ -44,8 +46,11 @@ export function salesSummary(orders) {
     tax,
     refunds,
     net,
+    outstanding,
+    collected: money(net - outstanding),
     itemsSold,
     count,
+    pending: live.filter((order) => (order.balanceDue || 0) > 0).length,
     averageOrder: count ? money(net / count) : 0,
     cancelled: orders.length - live.length,
   }

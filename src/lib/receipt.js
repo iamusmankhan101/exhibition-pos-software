@@ -29,7 +29,8 @@ function fromBase64Url(text) {
 }
 
 /** Minimal wire format — short keys keep the QR code scannable. */
-export function encodeReceipt(order, settings, exhibitionName) {
+export function encodeReceipt(order, settings, exhibitionName, customer) {
+  const design = settings.invoiceDesign || {}
   const payload = {
     v: 1,
     b: settings.business.name,
@@ -44,6 +45,7 @@ export function encodeReceipt(order, settings, exhibitionName) {
     ex: exhibitionName,
     sp: order.salespersonName,
     cu: order.customerName,
+    cc: design.showCustomerContact === false ? '' : [customer?.whatsapp || customer?.phone, customer?.email].filter(Boolean).join(' · '),
     it: order.items.map((item) => [item.name, `${item.color || ''}${item.size ? ` / ${item.size}` : ''}`, item.quantity, item.unitPrice]),
     sub: order.subtotal,
     dis: order.discountAmount,
@@ -51,9 +53,13 @@ export function encodeReceipt(order, settings, exhibitionName) {
     ti: settings.taxInclusive,
     tr: settings.taxRate,
     tot: order.total,
+    ap: order.amountPaid,
+    bd: order.balanceDue,
+    st: order.status,
     pm: order.paymentMethod,
     tc: settings.terms,
     ft: settings.receiptFooter,
+    dz: design,
   }
   return toBase64Url(JSON.stringify(payload))
 }
@@ -77,6 +83,7 @@ export function decodeReceipt(encoded) {
       exhibitionName: data.ex,
       salespersonName: data.sp,
       customerName: data.cu,
+      customerContact: data.cc || '',
       items: (data.it || []).map(([name, variant, quantity, unitPrice]) => ({
         name,
         variant,
@@ -89,18 +96,22 @@ export function decodeReceipt(encoded) {
       taxInclusive: data.ti,
       taxRate: data.tr,
       total: data.tot,
+      amountPaid: data.ap,
+      balanceDue: data.bd,
+      status: data.st,
       paymentMethod: data.pm,
       terms: data.tc,
       footer: data.ft,
+      design: data.dz || {},
     }
   } catch {
     return null
   }
 }
 
-export function receiptUrl(order, settings, exhibitionName) {
-  const base = `${window.location.origin}${window.location.pathname.replace(/\/$/, '')}`
-  const encoded = encodeReceipt(order, settings, exhibitionName)
+export function receiptUrl(order, settings, exhibitionName, customer) {
+  const base = window.location.origin
+  const encoded = encodeReceipt(order, settings, exhibitionName, customer)
   if (encoded.length <= MAX_FRAGMENT) return `${base}/r/${order.id}#d=${encoded}`
   return `${base}/r/${order.id}`
 }

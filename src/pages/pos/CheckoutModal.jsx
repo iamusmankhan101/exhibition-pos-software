@@ -22,14 +22,23 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
   const [method, setMethod] = useState(state.settings.paymentMethods[0] || 'Cash')
   const [tendered, setTendered] = useState('')
   const [reference, setReference] = useState('')
+  const [partPayment, setPartPayment] = useState(false)
+  const [paidNow, setPaidNow] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const maxDiscount = user.maxDiscountPercent ?? state.settings.maxDiscountPercent
   const totals = useMemo(() => computeTotals(cart, discount, state.settings), [cart, discount, state.settings])
 
-  const percentApplied = totals.subtotal ? (totals.discountAmount / totals.subtotal) * 100 : 0
+  // Line discounts count towards the cap too, otherwise they would be a way
+  // around the order-level limit.
+  const grossSubtotal = money(totals.subtotal + totals.lineDiscounts)
+  const percentApplied = grossSubtotal ? (totals.totalDiscount / grossSubtotal) * 100 : 0
   const overDiscountLimit = percentApplied > maxDiscount + 0.001
+
+  const paidNowValue = partPayment ? money(Number(paidNow) || 0) : totals.total
+  const balanceDue = money(totals.total - paidNowValue)
+  const isPending = partPayment && balanceDue > 0
 
   const changeDue = method === 'Cash' && tendered ? money(Number(tendered) - totals.total) : null
 
@@ -48,6 +57,7 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
         discount,
         paymentMethod: method,
         paymentReference: reference,
+        amountPaid: partPayment ? paidNowValue : null,
       })
       onComplete(order)
     } catch (err) {
@@ -84,7 +94,11 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
             </button>
           ) : (
             <button className="btn btn-primary" disabled={busy || !canAdvance} onClick={complete}>
-              {busy ? 'Saving…' : `Complete sale · ${currency(totals.total)}`}
+              {busy
+                ? 'Saving…'
+                : isPending
+                  ? `Take ${currency(paidNowValue)} · hold balance`
+                  : `Complete sale · ${currency(totals.total)}`}
             </button>
           )}
         </>
@@ -137,6 +151,12 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
           totals={totals}
           changeDue={changeDue}
           customer={customer}
+          partPayment={partPayment}
+          setPartPayment={setPartPayment}
+          paidNow={paidNow}
+          setPaidNow={setPaidNow}
+          paidNowValue={paidNowValue}
+          balanceDue={balanceDue}
         />
       )}
     </Modal>
@@ -402,12 +422,26 @@ function DiscountStep({ discount, setDiscount, totals, maxDiscount, percentAppli
       <div className="card" style={{ background: 'var(--surface-2)' }}>
         <div className="total-line">
           <span>Subtotal</span>
-          <span className="mono">{currency(totals.subtotal)}</span>
+          <span className="mono">{currency(totals.subtotal + totals.lineDiscounts)}</span>
         </div>
+        {totals.lineDiscounts > 0 && (
+          <div className="total-line">
+            <span>Item discounts</span>
+            <span className="mono" style={{ color: 'var(--good)' }}>
+              −{currency(totals.lineDiscounts)}
+            </span>
+          </div>
+        )}
         <div className="total-line">
-          <span>Discount</span>
+          <span>Order discount</span>
           <span className="mono" style={{ color: totals.discountAmount ? 'var(--good)' : undefined }}>
             −{currency(totals.discountAmount)}
+          </span>
+        </div>
+        <div className="total-line small" style={{ color: 'var(--muted-2)' }}>
+          <span>Total discount</span>
+          <span className="mono">
+            {percentApplied.toFixed(1)}% of {currency(totals.subtotal + totals.lineDiscounts)}
           </span>
         </div>
         <div className="total-line grand">
@@ -432,6 +466,12 @@ function PaymentStep({
   totals,
   changeDue,
   customer,
+  partPayment,
+  setPartPayment,
+  paidNow,
+  setPaidNow,
+  paidNowValue,
+  balanceDue,
 }) {
   const currency = useCurrency()
   const suggestions = useMemo(() => {
@@ -455,7 +495,65 @@ function PaymentStep({
         ))}
       </div>
 
-      {method === 'Cash' && (
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button className={!partPayment ? 'active' : ''} onClick={() => setPartPayment(false)}>
+          Pay in full
+        </button>
+        <button className={partPayment ? 'active' : ''} onClick={() => setPartPayment(true)}>
+          Part payment
+        </button>
+      </div>
+
+      {partPayment && (
+        <>
+          <Field
+            label="Amount received now"
+            hint="The rest is held as a balance due and the sale is saved as Pending."
+          >
+            <input
+              className="input"
+              type="number"
+              inputMode="decimal"
+              value={paidNow}
+              autoFocus
+              onChange={(event) => setPaidNow(event.target.value)}
+              placeholder="0.00"
+            />
+          </Field>
+          <div className="row wrap" style={{ gap: 8 }}>
+            {[0.25, 0.5, 0.75].map((fraction) => (
+              <button
+                key={fraction}
+                className="chip"
+                onClick={() => setPaidNow(String(money(totals.total * fraction)))}
+              >
+                {fraction * 100}% · {currency(totals.total * fraction)}
+              </button>
+            ))}
+            <button className="chip" onClick={() => setPaidNow('0')}>
+              Nothing yet
+            </button>
+          </div>
+          {balanceDue > 0 && (
+            <div
+              className="card"
+              style={{ background: 'var(--warn-soft)', borderColor: 'transparent' }}
+            >
+              <div className="row-between">
+                <span style={{ fontWeight: 620, color: '#a9660b' }}>Balance due</span>
+                <span className="mono" style={{ fontSize: 20, fontWeight: 750, color: '#a9660b' }}>
+                  {currency(balanceDue)}
+                </span>
+              </div>
+              <div className="small" style={{ color: '#a9660b', marginTop: 4 }}>
+                Stock leaves with the customer now. Settle the balance from the Sales page.
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {method === 'Cash' && !partPayment && (
         <>
           <Field label="Cash received">
             <input
@@ -529,6 +627,18 @@ function PaymentStep({
           <span>To pay</span>
           <span className="mono">{currency(totals.total)}</span>
         </div>
+        {partPayment && (
+          <>
+            <div className="total-line" style={{ marginTop: 8 }}>
+              <span>Receiving now</span>
+              <span className="mono">{currency(paidNowValue)}</span>
+            </div>
+            <div className="total-line" style={{ color: 'var(--warn)', fontWeight: 620 }}>
+              <span>Outstanding</span>
+              <span className="mono">{currency(balanceDue)}</span>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

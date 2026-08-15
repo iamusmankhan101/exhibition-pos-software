@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Field, Modal } from '../../components/ui.jsx'
+import { money } from '../../lib/format.js'
 import {
   receiptMessage,
   receiptQr,
@@ -19,14 +20,47 @@ export default function SaleComplete({ order, onClose }) {
   const currency = useCurrency()
   const [qr, setQr] = useState(null)
   const [showQr, setShowQr] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   const customer = state.customers.find((entry) => entry.id === order.customerId) || null
   const [contact, setContact] = useState(customer?.whatsapp || customer?.phone || '')
   const [email, setEmail] = useState(customer?.email || '')
 
   const url = useMemo(
-    () => receiptUrl(order, state.settings, activeExhibition?.name || ''),
-    [order, state.settings, activeExhibition],
+    () => receiptUrl(order, state.settings, activeExhibition?.name || '', customer),
+    [order, state.settings, activeExhibition, customer],
+  )
+
+  const pdfData = useMemo(
+    () => ({
+      business: state.settings.business,
+      currencySymbol: state.settings.currencySymbol,
+      design: state.settings.invoiceDesign,
+      invoiceNo: order.invoiceNo,
+      createdAt: order.createdAt,
+      exhibitionName: activeExhibition?.name || '',
+      salespersonName: order.salespersonName,
+      customerName: order.customerName,
+      customerContact: [customer?.whatsapp || customer?.phone, customer?.email].filter(Boolean).join(' · '),
+      items: order.items.map((item) => ({
+        name: item.name,
+        variant: [item.color, item.size].filter(Boolean).join(' / '),
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+      })),
+      subtotal: order.subtotal,
+      discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
+      tax: order.tax,
+      taxRate: state.settings.taxRate,
+      taxInclusive: state.settings.taxInclusive,
+      total: order.total,
+      amountPaid: order.amountPaid,
+      balanceDue: order.balanceDue,
+      status: order.status,
+      paymentMethod: order.paymentMethod,
+      terms: state.settings.terms,
+    }),
+    [order, state.settings, activeExhibition, customer],
   )
   const message = useMemo(() => receiptMessage(order, state.settings, url), [order, state.settings, url])
 
@@ -40,6 +74,34 @@ export default function SaleComplete({ order, onClose }) {
     const result = await shareOrCopy(`Receipt ${order.invoiceNo}`, message, url)
     if (result === 'copied') actions.toast('Receipt link copied', 'success')
     if (result === 'failed') actions.toast('Could not copy the link', 'warn')
+  }
+
+  /** Hands the PDF to the share sheet so it can be attached to an email. */
+  const attachPdf = async () => {
+    setBusy(true)
+    try {
+      const { shareInvoicePdf } = await import('../../lib/pdf.js')
+      const result = await shareInvoicePdf(pdfData, qr, message)
+      if (result === 'downloaded') {
+        actions.toast('PDF saved — attach it to your email', 'success')
+      }
+    } catch {
+      actions.toast('Could not build the PDF', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const savePdf = async () => {
+    setBusy(true)
+    try {
+      const { downloadInvoicePdf } = await import('../../lib/pdf.js')
+      await downloadInvoicePdf(pdfData, qr)
+    } catch {
+      actions.toast('Could not build the PDF', 'error')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -81,8 +143,26 @@ export default function SaleComplete({ order, onClose }) {
         <div className="small muted">
           {order.customerName} · {order.items.reduce((sum, item) => sum + item.quantity, 0)} item
           {order.items.reduce((sum, item) => sum + item.quantity, 0) === 1 ? '' : 's'}
-          {order.discountAmount > 0 && ` · ${currency(order.discountAmount)} discount`}
+          {order.discountAmount + (order.lineDiscounts || 0) > 0 &&
+            ` · ${currency(order.discountAmount + (order.lineDiscounts || 0))} discount`}
         </div>
+
+        {order.balanceDue > 0 && (
+          <div
+            className="card"
+            style={{ background: 'var(--warn-soft)', borderColor: 'transparent', marginTop: 12, textAlign: 'left' }}
+          >
+            <div className="row-between">
+              <span style={{ fontWeight: 620, color: '#a9660b' }}>Balance due</span>
+              <span className="mono" style={{ fontWeight: 750, color: '#a9660b' }}>
+                {currency(order.balanceDue)}
+              </span>
+            </div>
+            <div className="small" style={{ color: '#a9660b', marginTop: 3 }}>
+              {currency(order.amountPaid)} received · settle the rest from the Sales page.
+            </div>
+          </div>
+        )}
       </div>
 
       {channels.qr && (
@@ -150,19 +230,31 @@ export default function SaleComplete({ order, onClose }) {
                 placeholder="customer@example.com"
               />
             </Field>
-            <button
-              className="btn btn-block"
-              disabled={!email.trim()}
-              onClick={() => sendEmail(email, `Your ${state.settings.business.name} receipt ${order.invoiceNo}`, message)}
-            >
-              Email receipt
-            </button>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                className="btn grow"
+                disabled={!email.trim()}
+                onClick={() =>
+                  sendEmail(email, `Your ${state.settings.business.name} invoice ${order.invoiceNo}`, message)
+                }
+              >
+                Email link
+              </button>
+              <button className="btn grow" disabled={busy} onClick={attachPdf}>
+                {busy ? 'Building…' : 'Send PDF'}
+              </button>
+            </div>
           </>
         )}
 
-        <button className="btn btn-block" onClick={share}>
-          Share / copy link
-        </button>
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn grow" onClick={share}>
+            Share link
+          </button>
+          <button className="btn grow" disabled={busy} onClick={savePdf}>
+            {busy ? 'Building…' : 'Download PDF'}
+          </button>
+        </div>
       </div>
     </Modal>
   )

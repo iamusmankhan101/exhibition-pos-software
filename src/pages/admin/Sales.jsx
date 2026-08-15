@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Confirm, EmptyState, Field, Modal, StatusBadge } from '../../components/ui.jsx'
-import { formatDate } from '../../lib/format.js'
+import { formatDate, money } from '../../lib/format.js'
 import { filterOrders, salesSummary } from '../../lib/analytics.js'
 import { exportCsv, exportExcel, exportPdf } from '../../lib/csv.js'
 
@@ -20,6 +20,7 @@ export default function Sales() {
   const [to, setTo] = useState('')
   const [refunding, setRefunding] = useState(null)
   const [cancelling, setCancelling] = useState(null)
+  const [settling, setSettling] = useState(null)
 
   const ownOnly = !can('admin.sales')
 
@@ -77,8 +78,15 @@ export default function Sales() {
           <div className="stat-value">{summary.itemsSold}</div>
         </div>
         <div className="stat">
-          <div className="stat-label">Refunded</div>
-          <div className="stat-value">{currency(summary.refunds)}</div>
+          <div className="stat-label">{summary.outstanding > 0 ? 'Outstanding' : 'Refunded'}</div>
+          <div className="stat-value" style={summary.outstanding > 0 ? { color: 'var(--warn)' } : undefined}>
+            {currency(summary.outstanding > 0 ? summary.outstanding : summary.refunds)}
+          </div>
+          {summary.outstanding > 0 && (
+            <div className="stat-meta">
+              {summary.pending} pending · {currency(summary.refunds)} refunded
+            </div>
+          )}
         </div>
       </div>
 
@@ -164,6 +172,11 @@ export default function Sales() {
                   <td className="right mono">{order.discountAmount ? `−${currency(order.discountAmount)}` : '—'}</td>
                   <td className="right mono" style={{ fontWeight: 650 }}>
                     {currency(order.total)}
+                    {order.balanceDue > 0 && (
+                      <div className="small" style={{ color: 'var(--warn)', fontWeight: 600 }}>
+                        {currency(order.balanceDue)} due
+                      </div>
+                    )}
                   </td>
                   <td className="small">{order.paymentMethod}</td>
                   <td>
@@ -182,10 +195,12 @@ export default function Sales() {
           onClose={() => navigate('/admin/sales')}
           onRefund={() => setRefunding(selected)}
           onCancel={() => setCancelling(selected)}
+          onSettle={() => setSettling(selected)}
         />
       )}
 
       {refunding && <RefundModal order={refunding} onClose={() => setRefunding(null)} />}
+      {settling && <SettleModal order={settling} onClose={() => setSettling(null)} />}
 
       <Confirm
         open={Boolean(cancelling)}
@@ -202,11 +217,12 @@ export default function Sales() {
 
 /* ---------------------------------------------------------------- detail */
 
-function OrderDetail({ order, onClose, onRefund, onCancel }) {
+function OrderDetail({ order, onClose, onRefund, onCancel, onSettle }) {
   const { state, can } = useApp()
   const currency = useCurrency()
   const exhibition = state.exhibitions.find((entry) => entry.id === order.exhibitionId)
-  const refundable = order.status === 'Completed' || order.status === 'Partially Refunded'
+  const refundable =
+    order.status === 'Completed' || order.status === 'Partially Refunded' || order.status === 'Pending'
 
   return (
     <Modal
@@ -220,6 +236,11 @@ function OrderDetail({ order, onClose, onRefund, onCancel }) {
           <Link className="btn" to={`/r/${order.id}`} target="_blank" rel="noopener">
             Receipt
           </Link>
+          {order.balanceDue > 0 && (
+            <button className="btn btn-primary" onClick={onSettle}>
+              Record payment
+            </button>
+          )}
           {can('refund') && refundable && (
             <button className="btn" onClick={onRefund}>
               Return / refund
@@ -316,9 +337,122 @@ function OrderDetail({ order, onClose, onRefund, onCancel }) {
           <span>Total</span>
           <span className="mono">{currency(order.total)}</span>
         </div>
+        {order.balanceDue > 0 && (
+          <>
+            <div className="total-line" style={{ marginTop: 8 }}>
+              <span>Received</span>
+              <span className="mono">{currency(order.amountPaid)}</span>
+            </div>
+            <div className="total-line" style={{ color: 'var(--warn)', fontWeight: 650 }}>
+              <span>Balance due</span>
+              <span className="mono">{currency(order.balanceDue)}</span>
+            </div>
+          </>
+        )}
       </div>
 
       {order.note && <p className="small muted">Note: {order.note}</p>}
+    </Modal>
+  )
+}
+
+/* ---------------------------------------------------------------- settle */
+
+function SettleModal({ order, onClose }) {
+  const { state, actions } = useApp()
+  const currency = useCurrency()
+  const [method, setMethod] = useState(order.paymentMethod)
+  const [amount, setAmount] = useState(String(order.balanceDue))
+  const [reference, setReference] = useState('')
+  const [error, setError] = useState('')
+
+  const received = Math.max(0, Math.min(Number(amount) || 0, order.balanceDue))
+  const remaining = money(order.balanceDue - received)
+
+  const submit = () => {
+    try {
+      actions.settlePayment({
+        orderId: order.id,
+        invoiceNo: order.invoiceNo,
+        method,
+        amount: received,
+        reference,
+      })
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Record payment"
+      subtitle={`${order.invoiceNo} · ${currency(order.balanceDue)} outstanding`}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={received <= 0} onClick={submit}>
+            Take {currency(received)}
+          </button>
+        </>
+      }
+    >
+      {error && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {error}
+        </div>
+      )}
+
+      <Field label="Amount received">
+        <input
+          className="input"
+          type="number"
+          inputMode="decimal"
+          value={amount}
+          autoFocus
+          onChange={(event) => setAmount(event.target.value)}
+        />
+      </Field>
+
+      <div className="row wrap" style={{ gap: 8 }}>
+        <button className="chip" onClick={() => setAmount(String(order.balanceDue))}>
+          Settle in full · {currency(order.balanceDue)}
+        </button>
+        <button className="chip" onClick={() => setAmount(String(money(order.balanceDue / 2)))}>
+          Half
+        </button>
+      </div>
+
+      <Field label="Payment method">
+        <select className="select" value={method} onChange={(event) => setMethod(event.target.value)}>
+          {state.settings.paymentMethods.map((entry) => (
+            <option key={entry}>{entry}</option>
+          ))}
+        </select>
+      </Field>
+
+      <Field label="Reference (optional)">
+        <input className="input" value={reference} onChange={(event) => setReference(event.target.value)} />
+      </Field>
+
+      <div className="card" style={{ background: 'var(--surface-2)' }}>
+        <div className="total-line">
+          <span>Already received</span>
+          <span className="mono">{currency(order.amountPaid)}</span>
+        </div>
+        <div className="total-line">
+          <span>Taking now</span>
+          <span className="mono">{currency(received)}</span>
+        </div>
+        <div className="total-line grand" style={{ fontSize: 16, color: remaining > 0 ? 'var(--warn)' : 'var(--brand)' }}>
+          <span>{remaining > 0 ? 'Still due' : 'Fully settled'}</span>
+          <span className="mono">{currency(remaining)}</span>
+        </div>
+      </div>
     </Modal>
   )
 }

@@ -7,8 +7,8 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useNavigate } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { computeTotals, findByCode, findVariant, getStock } from '../../lib/domain.js'
-import { formatTime, variantLabel } from '../../lib/format.js'
-import { Modal, SyncPill, Thumb } from '../../components/ui.jsx'
+import { formatTime, money, variantLabel } from '../../lib/format.js'
+import { Field, Modal, SyncPill, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import CheckoutModal from './CheckoutModal.jsx'
 import SaleComplete from './SaleComplete.jsx'
@@ -41,6 +41,7 @@ export default function POS() {
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
   const [completed, setCompleted] = useState(null)
+  const [discountItem, setDiscountItem] = useState(null)
   const [clock, setClock] = useState(() => new Date().toISOString())
 
   const exhibitionId = activeExhibition?.id
@@ -170,6 +171,15 @@ export default function POS() {
   }
 
   const clearCart = () => setCart([])
+
+  const applyLineDiscount = (variantId, amount) =>
+    setCart((current) =>
+      current.map((item) =>
+        item.variantId === variantId
+          ? { ...item, lineDiscount: Math.max(0, Math.min(amount, item.quantity * item.unitPrice)) }
+          : item,
+      ),
+    )
 
   const totals = useMemo(
     () => computeTotals(cart, { type: 'percentage', value: 0 }, state.settings),
@@ -395,45 +405,74 @@ export default function POS() {
               <p>Scan a label or tap a product to begin.</p>
             </div>
           )}
-          {cart.map((item) => (
-            <div key={item.variantId} className="cart-item">
-              <Thumb src={item.image} name={item.name} />
-              <div className="cart-info">
-                <div className="cart-name">{item.name}</div>
-                <div className="cart-var">
-                  {[item.color, item.size].filter(Boolean).join(' · ')} · {item.sku}
-                </div>
-                <div className="row-between" style={{ marginTop: 7 }}>
-                  <div className="qty">
-                    <button onClick={() => setQuantity(item.variantId, item.quantity - 1)}>−</button>
-                    <span>{item.quantity}</span>
-                    <button onClick={() => setQuantity(item.variantId, item.quantity + 1)}>+</button>
+          {cart.map((item) => {
+            const gross = item.quantity * item.unitPrice
+            const discounted = (item.lineDiscount || 0) > 0
+            return (
+              <div key={item.variantId} className="cart-item">
+                <Thumb src={item.image} name={item.name} />
+                <div className="cart-info">
+                  <div className="cart-name">{item.name}</div>
+                  <div className="cart-var">
+                    {[item.color, item.size].filter(Boolean).join(' · ')} · {item.sku}
                   </div>
-                  <div className="right">
-                    <div className="mono" style={{ fontWeight: 680 }}>
-                      {currency(item.quantity * item.unitPrice)}
+                  <div className="row-between" style={{ marginTop: 7 }}>
+                    <div className="row" style={{ gap: 6 }}>
+                      <div className="qty">
+                        <button onClick={() => setQuantity(item.variantId, item.quantity - 1)}>−</button>
+                        <span>{item.quantity}</span>
+                        <button onClick={() => setQuantity(item.variantId, item.quantity + 1)}>+</button>
+                      </div>
+                      <button
+                        className={`btn btn-sm ${discounted ? 'btn-primary' : 'btn-ghost'}`}
+                        style={{ padding: '5px 8px' }}
+                        title="Discount this line"
+                        onClick={() => setDiscountItem(item)}
+                      >
+                        %
+                      </button>
                     </div>
-                    <div className="small muted">{currency(item.unitPrice)} each</div>
+                    <div className="right">
+                      <div className="mono" style={{ fontWeight: 680 }}>
+                        {currency(gross - (item.lineDiscount || 0))}
+                      </div>
+                      {discounted ? (
+                        <div className="small" style={{ color: 'var(--brand)' }}>
+                          <span style={{ textDecoration: 'line-through', color: 'var(--muted-2)' }}>
+                            {currency(gross)}
+                          </span>{' '}
+                          −{currency(item.lineDiscount)}
+                        </div>
+                      ) : (
+                        <div className="small muted">{currency(item.unitPrice)} each</div>
+                      )}
+                    </div>
                   </div>
                 </div>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ alignSelf: 'flex-start' }}
+                  onClick={() => setQuantity(item.variantId, 0)}
+                  aria-label="Remove"
+                >
+                  ✕
+                </button>
               </div>
-              <button
-                className="btn btn-ghost btn-sm"
-                style={{ alignSelf: 'flex-start' }}
-                onClick={() => setQuantity(item.variantId, 0)}
-                aria-label="Remove"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         <div className="cart-foot">
           <div className="total-line">
             <span>Subtotal</span>
-            <span className="mono">{currency(totals.subtotal)}</span>
+            <span className="mono">{currency(totals.subtotal + totals.lineDiscounts)}</span>
           </div>
+          {totals.lineDiscounts > 0 && (
+            <div className="total-line" style={{ color: 'var(--brand)' }}>
+              <span>Item discounts</span>
+              <span className="mono">−{currency(totals.lineDiscounts)}</span>
+            </div>
+          )}
           {state.settings.taxEnabled && (
             <div className="total-line">
               <span>
@@ -506,12 +545,126 @@ export default function POS() {
         />
       )}
 
+      <LineDiscountModal
+        item={discountItem}
+        maxPercent={user.maxDiscountPercent ?? state.settings.maxDiscountPercent}
+        onClose={() => setDiscountItem(null)}
+        onApply={(amount) => {
+          applyLineDiscount(discountItem.variantId, amount)
+          setDiscountItem(null)
+        }}
+      />
+
       {completed && <SaleComplete order={completed} onClose={() => setCompleted(null)} />}
     </div>
   )
 }
 
 /* ------------------------------------------------------------ sub-views */
+
+/** Per-line discount, capped at the salesperson's own limit. */
+function LineDiscountModal({ item, maxPercent, onClose, onApply }) {
+  const currency = useCurrency()
+  const [mode, setMode] = useState('percentage')
+  const [value, setValue] = useState('')
+
+  useEffect(() => {
+    if (!item) return
+    const gross = item.quantity * item.unitPrice
+    const existing = item.lineDiscount || 0
+    setMode('percentage')
+    setValue(existing ? String(Math.round((existing / gross) * 1000) / 10) : '')
+  }, [item])
+
+  if (!item) return null
+
+  const gross = item.quantity * item.unitPrice
+  const amount =
+    mode === 'percentage' ? money((gross * (Number(value) || 0)) / 100) : money(Number(value) || 0)
+  const percent = gross ? (amount / gross) * 100 : 0
+  const overLimit = percent > maxPercent + 0.001
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Discount this item"
+      subtitle={`${item.name} · ${item.quantity} × ${currency(item.unitPrice)}`}
+      footer={
+        <>
+          <button className="btn" onClick={() => onApply(0)}>
+            Remove discount
+          </button>
+          <button className="btn btn-primary" disabled={overLimit} onClick={() => onApply(amount)}>
+            Apply −{currency(amount)}
+          </button>
+        </>
+      }
+    >
+      <div className="seg" style={{ alignSelf: 'flex-start' }}>
+        <button className={mode === 'percentage' ? 'active' : ''} onClick={() => { setMode('percentage'); setValue('') }}>
+          Percentage
+        </button>
+        <button className={mode === 'fixed' ? 'active' : ''} onClick={() => { setMode('fixed'); setValue('') }}>
+          Fixed amount
+        </button>
+      </div>
+
+      {mode === 'percentage' && (
+        <div className="row wrap" style={{ gap: 8 }}>
+          {[5, 10, 15, 20, 25, 50].filter((quick) => quick <= maxPercent).map((quick) => (
+            <button
+              key={quick}
+              className={`chip ${Number(value) === quick ? 'active' : ''}`}
+              onClick={() => setValue(String(quick))}
+            >
+              {quick}%
+            </button>
+          ))}
+        </div>
+      )}
+
+      <Field
+        label={mode === 'percentage' ? 'Percentage off' : 'Amount off'}
+        hint={`Your limit is ${maxPercent}% of the line.`}
+      >
+        <input
+          className="input"
+          type="number"
+          min="0"
+          inputMode="decimal"
+          value={value}
+          autoFocus
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="0"
+        />
+      </Field>
+
+      {overLimit && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {percent.toFixed(1)}% exceeds your {maxPercent}% limit.
+        </div>
+      )}
+
+      <div className="card" style={{ background: 'var(--surface-2)' }}>
+        <div className="total-line">
+          <span>Line total</span>
+          <span className="mono">{currency(gross)}</span>
+        </div>
+        <div className="total-line">
+          <span>Discount</span>
+          <span className="mono" style={{ color: amount ? 'var(--brand)' : undefined }}>
+            −{currency(amount)}
+          </span>
+        </div>
+        <div className="total-line grand" style={{ fontSize: 17 }}>
+          <span>Pays</span>
+          <span className="mono">{currency(gross - amount)}</span>
+        </div>
+      </div>
+    </Modal>
+  )
+}
 
 function VariantPicker({ product, onClose, onPick }) {
   const { state, activeExhibition } = useApp()

@@ -13,6 +13,7 @@ import {
   createOrder,
   getStock,
   refundOrder,
+  settlePayment,
   transferStock,
 } from './domain.js'
 import { DEFAULT_SETTINGS, buildSeedState } from './seed.js'
@@ -78,7 +79,13 @@ function loadSession() {
 function migrate(state) {
   return {
     ...state,
-    settings: { ...DEFAULT_SETTINGS, ...state.settings, business: { ...DEFAULT_SETTINGS.business, ...state.settings?.business } },
+    settings: {
+      ...DEFAULT_SETTINGS,
+      ...state.settings,
+      business: { ...DEFAULT_SETTINGS.business, ...state.settings?.business },
+      invoiceDesign: { ...DEFAULT_SETTINGS.invoiceDesign, ...state.settings?.invoiceDesign },
+      receiptChannels: { ...DEFAULT_SETTINGS.receiptChannels, ...state.settings?.receiptChannels },
+    },
     notifications: state.notifications || [],
     outbox: state.outbox || [],
     auditLogs: state.auditLogs || [],
@@ -626,13 +633,14 @@ export function AppProvider({ children }) {
             orders: next.orders.map((entry) =>
               entry.id === orderId ? { ...entry, status: 'Cancelled', note: reason } : entry,
             ),
+            // Reverse only money that was actually taken, not the invoice total.
             payments: [
               {
                 id: uid('ref'),
                 orderId,
                 invoiceNo: order.invoiceNo,
                 method: order.paymentMethod,
-                amount: -money(order.total - (order.refundedAmount || 0)),
+                amount: -money((order.amountPaid ?? order.total) - (order.refundedAmount || 0)),
                 status: 'Cancelled',
                 reference: reason || '',
                 kind: 'refund',
@@ -648,6 +656,33 @@ export function AppProvider({ children }) {
         toast('Sale cancelled and stock restored', 'warn')
       },
 
+      settlePayment(payload) {
+        let error = null
+        let received = 0
+        setState((current) => {
+          try {
+            const result = settlePayment(current, { ...payload, userId: user?.id })
+            received = result.received
+            const draft = withAudit(
+              result.state,
+              'Recorded balance payment',
+              `${payload.invoiceNo} · ${result.received} · ${payload.method}${
+                result.balanceDue > 0 ? ` · ${result.balanceDue} still due` : ' · settled'
+              }`,
+              'order',
+              payload.orderId,
+            )
+            return withOutbox(draft, 'order.settle', uid('stl'), payload)
+          } catch (err) {
+            error = err
+            return current
+          }
+        })
+        if (error) throw error
+        toast('Payment recorded', 'success')
+        return received
+      },
+
       refund(payload) {
         let error = null
         let amount = 0
@@ -655,20 +690,20 @@ export function AppProvider({ children }) {
           try {
             const result = refundOrder(current, { ...payload, userId: user?.id, userName: user?.name })
             amount = result.refundAmount
+            const detail = [
+              result.refundAmount > 0 ? `${result.refundAmount} via ${payload.refundMethod}` : null,
+              result.balanceCleared > 0 ? `${result.balanceCleared} written off the balance due` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
             let next = withNotification(
               result.state,
               'refund',
-              'Refund processed',
-              `${payload.invoiceNo} — ${result.refundAmount} via ${payload.refundMethod}.`,
+              'Return processed',
+              `${payload.invoiceNo} — ${detail}.`,
               'warn',
             )
-            next = withAudit(
-              next,
-              'Processed refund',
-              `${payload.invoiceNo} · ${result.refundAmount} · ${payload.refundMethod}`,
-              'order',
-              payload.orderId,
-            )
+            next = withAudit(next, 'Processed return', `${payload.invoiceNo} · ${detail}`, 'order', payload.orderId)
             return withOutbox(next, 'order.refund', uid('rfd'), payload)
           } catch (err) {
             error = err
@@ -676,7 +711,10 @@ export function AppProvider({ children }) {
           }
         })
         if (error) throw error
-        toast('Refund processed and stock restored', 'success')
+        toast(
+          amount > 0 ? 'Refund processed and stock restored' : 'Return recorded and stock restored',
+          'success',
+        )
         return amount
       },
 

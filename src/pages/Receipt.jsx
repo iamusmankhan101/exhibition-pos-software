@@ -22,6 +22,7 @@ export default function Receipt() {
   const { orderId } = useParams()
   const context = useApp()
   const [qr, setQr] = useState(null)
+  const [busy, setBusy] = useState(false)
 
   const fromFragment = useMemo(fragmentPayload, [])
 
@@ -32,14 +33,17 @@ export default function Receipt() {
     const order = state.orders.find((entry) => entry.id === orderId)
     if (!order) return null
     const exhibition = state.exhibitions.find((entry) => entry.id === order.exhibitionId)
+    const customer = state.customers.find((entry) => entry.id === order.customerId)
     return {
       business: state.settings.business,
       currencySymbol: state.settings.currencySymbol,
+      design: state.settings.invoiceDesign || {},
       invoiceNo: order.invoiceNo,
       createdAt: order.createdAt,
       exhibitionName: exhibition?.name || '',
       salespersonName: order.salespersonName,
       customerName: order.customerName,
+      customerContact: [customer?.whatsapp || customer?.phone, customer?.email].filter(Boolean).join(' · '),
       items: order.items.map((item) => ({
         name: item.name,
         variant: [item.color, item.size].filter(Boolean).join(' / '),
@@ -47,11 +51,13 @@ export default function Receipt() {
         unitPrice: item.unitPrice,
       })),
       subtotal: order.subtotal,
-      discountAmount: order.discountAmount,
+      discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
       tax: order.tax,
       taxInclusive: state.settings.taxInclusive,
       taxRate: state.settings.taxRate,
       total: order.total,
+      amountPaid: order.amountPaid,
+      balanceDue: order.balanceDue,
       paymentMethod: order.paymentMethod,
       terms: state.settings.terms,
       footer: state.settings.receiptFooter,
@@ -62,6 +68,18 @@ export default function Receipt() {
   useEffect(() => {
     receiptQr(window.location.href).then(setQr).catch(() => setQr(null))
   }, [])
+
+  const savePdf = async () => {
+    setBusy(true)
+    try {
+      const { downloadInvoicePdf } = await import('../lib/pdf.js')
+      await downloadInvoicePdf(data, qr)
+    } catch {
+      /* the print button remains as a fallback */
+    } finally {
+      setBusy(false)
+    }
+  }
 
   if (!data) {
     // A link without an embedded payload needs local data to resolve.
@@ -79,6 +97,8 @@ export default function Receipt() {
     )
   }
 
+  const design = data.design || {}
+
   const cur = (value) =>
     `${data.currencySymbol}${Number(money(value || 0)).toLocaleString(undefined, {
       minimumFractionDigits: 2,
@@ -89,21 +109,23 @@ export default function Receipt() {
     <div className="receipt-page">
       <div style={{ width: '100%', maxWidth: 430 }}>
         <div className="receipt-actions no-print">
-          <button className="btn" onClick={() => window.print()}>
-            Print / Save PDF
+          <button className="btn" disabled={busy} onClick={savePdf}>
+            {busy ? 'Building…' : 'Download PDF'}
           </button>
-          <button
-            className="btn"
-            onClick={() => navigator.clipboard?.writeText(window.location.href)}
-          >
+          <button className="btn" onClick={() => window.print()}>
+            Print
+          </button>
+          <button className="btn" onClick={() => navigator.clipboard?.writeText(window.location.href)}>
             Copy link
           </button>
         </div>
 
         <article className="receipt">
-          <div className="receipt-logo">
-            {data.business.logo ? <img src={data.business.logo} alt="" /> : data.business.name?.slice(0, 1)}
-          </div>
+          {design.showLogo !== false && (
+            <div className="receipt-logo" style={design.accent ? { background: design.accent } : undefined}>
+              {data.business.logo ? <img src={data.business.logo} alt="" /> : data.business.name?.slice(0, 1)}
+            </div>
+          )}
           <h1>{data.business.name}</h1>
           {data.business.tagline && <p className="tagline">{data.business.tagline}</p>}
           <p className="tagline">
@@ -135,20 +157,28 @@ export default function Receipt() {
             <span>Date</span>
             <span>{formatDate(data.createdAt, true)}</span>
           </div>
-          {data.exhibitionName && (
+          {design.showExhibition !== false && data.exhibitionName && (
             <div className="kv">
               <span>Exhibition</span>
               <span>{data.exhibitionName}</span>
             </div>
           )}
-          <div className="kv">
-            <span>Served by</span>
-            <span>{data.salespersonName}</span>
-          </div>
+          {design.showSalesperson !== false && (
+            <div className="kv">
+              <span>Served by</span>
+              <span>{data.salespersonName}</span>
+            </div>
+          )}
           <div className="kv">
             <span>Customer</span>
             <span>{data.customerName}</span>
           </div>
+          {design.showCustomerContact !== false && data.customerContact && (
+            <div className="kv">
+              <span>Contact</span>
+              <span>{data.customerContact}</span>
+            </div>
+          )}
 
           <hr />
 
@@ -176,7 +206,7 @@ export default function Receipt() {
               <span>−{cur(data.discountAmount)}</span>
             </div>
           )}
-          {data.tax > 0 && (
+          {design.showTaxBreakdown !== false && data.tax > 0 && (
             <div className="kv">
               <span>
                 VAT {data.taxRate}% {data.taxInclusive ? '(included)' : ''}
@@ -193,8 +223,20 @@ export default function Receipt() {
             <span>Paid by</span>
             <span>{data.paymentMethod}</span>
           </div>
+          {data.balanceDue > 0 && (
+            <>
+              <div className="kv">
+                <span>Amount received</span>
+                <span>{cur(data.amountPaid)}</span>
+              </div>
+              <div className="kv">
+                <span style={{ color: '#c0343d' }}>Balance due</span>
+                <span style={{ color: '#c0343d' }}>{cur(data.balanceDue)}</span>
+              </div>
+            </>
+          )}
 
-          {qr && (
+          {design.showQr !== false && qr && (
             <div className="receipt-qr">
               <img src={qr} alt="Receipt QR code" />
               <p className="tagline" style={{ marginTop: 6 }}>
@@ -205,7 +247,7 @@ export default function Receipt() {
 
           <div className="receipt-foot">
             {data.business.vatNumber && <div>VAT No. {data.business.vatNumber}</div>}
-            {data.terms && <p style={{ margin: '8px 0 0' }}>{data.terms}</p>}
+            {design.showTerms !== false && data.terms && <p style={{ margin: '8px 0 0' }}>{data.terms}</p>}
             {data.footer && <p style={{ margin: '8px 0 0' }}>{data.footer}</p>}
           </div>
         </article>

@@ -197,6 +197,9 @@ export function createOrder(state, payload) {
     createdAt = nowIso(),
     note = '',
     offlineCreated = false,
+    // `null` means "paid in full"; a number records a part payment and leaves
+    // the order Pending with a balance due.
+    amountPaid = null,
   } = payload
 
   const existing = state.orders.find((order) => order.clientId === clientId)
@@ -216,6 +219,9 @@ export function createOrder(state, payload) {
 
   const totals = computeTotals(items, discount, state.settings)
   const invoiceNo = nextInvoiceNumber(state, deviceCode)
+
+  const paid = amountPaid === null ? totals.total : money(Math.max(0, Math.min(amountPaid, totals.total)))
+  const balanceDue = money(totals.total - paid)
 
   const order = {
     id: uid('ord'),
@@ -240,7 +246,9 @@ export function createOrder(state, payload) {
     total: totals.total,
     paymentMethod,
     paymentReference: paymentReference || '',
-    status: 'Completed',
+    status: balanceDue > 0 ? 'Pending' : 'Completed',
+    amountPaid: paid,
+    balanceDue,
     note,
     offlineCreated,
     refundedAmount: 0,
@@ -261,19 +269,22 @@ export function createOrder(state, payload) {
     })
   }
 
-  const payment = {
-    id: uid('pay'),
-    orderId: order.id,
-    invoiceNo,
-    method: paymentMethod,
-    amount: totals.total,
-    status: 'Captured',
-    reference: paymentReference || '',
-    kind: 'payment',
-    exhibitionId,
-    createdAt,
+  // Only money that actually changed hands becomes a payment row.
+  if (paid > 0) {
+    const payment = {
+      id: uid('pay'),
+      orderId: order.id,
+      invoiceNo,
+      method: paymentMethod,
+      amount: paid,
+      status: 'Captured',
+      reference: paymentReference || '',
+      kind: 'payment',
+      exhibitionId,
+      createdAt,
+    }
+    next = { ...next, payments: [payment, ...next.payments] }
   }
-  next = { ...next, payments: [payment, ...next.payments] }
 
   if (customerId) {
     next = {
@@ -283,7 +294,7 @@ export function createOrder(state, payload) {
           ? {
               ...customer,
               totalOrders: (customer.totalOrders || 0) + 1,
-              totalSpend: money((customer.totalSpend || 0) + totals.total),
+              totalSpend: money((customer.totalSpend || 0) + paid),
               lastPurchaseAt: createdAt,
               exhibitionIds: Array.from(new Set([...(customer.exhibitionIds || []), exhibitionId])),
             }
@@ -293,6 +304,65 @@ export function createOrder(state, payload) {
   }
 
   return { state: next, order, duplicate: false }
+}
+
+/**
+ * Takes a further payment against an order that still has a balance due, and
+ * flips it to Completed once nothing is outstanding.
+ */
+export function settlePayment(state, { orderId, method, amount, reference, userId }) {
+  const order = state.orders.find((entry) => entry.id === orderId)
+  if (!order) throw new Error('Order not found.')
+
+  const outstanding = money(order.balanceDue || 0)
+  if (outstanding <= 0) throw new Error('This order is already paid in full.')
+
+  const received = money(Math.max(0, Math.min(amount, outstanding)))
+  if (received <= 0) throw new Error('Enter an amount greater than zero.')
+
+  const balanceDue = money(outstanding - received)
+
+  let next = {
+    ...state,
+    orders: state.orders.map((entry) =>
+      entry.id === orderId
+        ? {
+            ...entry,
+            amountPaid: money((entry.amountPaid || 0) + received),
+            balanceDue,
+            status: balanceDue > 0 ? 'Pending' : 'Completed',
+          }
+        : entry,
+    ),
+    payments: [
+      {
+        id: uid('pay'),
+        orderId: order.id,
+        invoiceNo: order.invoiceNo,
+        method,
+        amount: received,
+        status: 'Captured',
+        reference: reference || 'Balance settlement',
+        kind: 'payment',
+        exhibitionId: order.exhibitionId,
+        createdAt: nowIso(),
+      },
+      ...state.payments,
+    ],
+  }
+
+  if (order.customerId) {
+    next = {
+      ...next,
+      customers: next.customers.map((customer) =>
+        customer.id === order.customerId
+          ? { ...customer, totalSpend: money((customer.totalSpend || 0) + received) }
+          : customer,
+      ),
+    }
+  }
+
+  return { state: next, received, balanceDue, userId }
 }
 
 /**
@@ -325,9 +395,17 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
     refundAmount = money(refundAmount * (1 + state.settings.taxRate / 100))
   }
 
+  // A return first cancels anything the customer still owes; only what they
+  // actually handed over comes back as cash.
+  const outstanding = money(order.balanceDue || 0)
+  const balanceReduction = Math.min(outstanding, refundAmount)
+  const cashRefund = money(refundAmount - balanceReduction)
+  const balanceDue = money(outstanding - balanceReduction)
+
   const totalReturned = updatedItems.reduce((sum, item) => sum + (item.returnedQuantity || 0), 0)
   const totalSold = updatedItems.reduce((sum, item) => sum + item.quantity, 0)
-  const status = totalReturned >= totalSold ? 'Refunded' : 'Partially Refunded'
+  const status =
+    totalReturned >= totalSold ? 'Refunded' : balanceDue > 0 ? 'Pending' : 'Partially Refunded'
 
   let next = {
     ...state,
@@ -337,7 +415,8 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
             ...entry,
             items: updatedItems,
             status,
-            refundedAmount: money((entry.refundedAmount || 0) + refundAmount),
+            balanceDue,
+            refundedAmount: money((entry.refundedAmount || 0) + cashRefund),
           }
         : entry,
     ),
@@ -355,32 +434,34 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
     })
   }
 
-  const refund = {
-    id: uid('ref'),
-    orderId: order.id,
-    invoiceNo: order.invoiceNo,
-    method: refundMethod,
-    amount: -refundAmount,
-    status: 'Refunded',
-    reference: reason || '',
-    kind: 'refund',
-    exhibitionId: order.exhibitionId,
-    createdAt: nowIso(),
+  if (cashRefund > 0) {
+    const refund = {
+      id: uid('ref'),
+      orderId: order.id,
+      invoiceNo: order.invoiceNo,
+      method: refundMethod,
+      amount: -cashRefund,
+      status: 'Refunded',
+      reference: reason || '',
+      kind: 'refund',
+      exhibitionId: order.exhibitionId,
+      createdAt: nowIso(),
+    }
+    next = { ...next, payments: [refund, ...next.payments] }
   }
-  next = { ...next, payments: [refund, ...next.payments] }
 
-  if (order.customerId) {
+  if (order.customerId && cashRefund > 0) {
     next = {
       ...next,
       customers: next.customers.map((customer) =>
         customer.id === order.customerId
-          ? { ...customer, totalSpend: money((customer.totalSpend || 0) - refundAmount) }
+          ? { ...customer, totalSpend: money((customer.totalSpend || 0) - cashRefund) }
           : customer,
       ),
     }
   }
 
-  return { state: next, refundAmount, userName }
+  return { state: next, refundAmount: cashRefund, balanceCleared: balanceReduction, userName }
 }
 
 /* ------------------------------------------------------------- selections */

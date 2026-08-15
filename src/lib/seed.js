@@ -27,6 +27,17 @@ export const DEFAULT_SETTINGS = {
   maxDiscountPercent: 15,
   largeDiscountAlertPercent: 25,
   receiptChannels: { whatsapp: true, sms: true, email: true, qr: true },
+  invoiceDesign: {
+    accent: '#0d9e59',
+    showLogo: true,
+    showQr: true,
+    showTaxBreakdown: true,
+    showSalesperson: true,
+    showExhibition: true,
+    showCustomerContact: true,
+    showTerms: true,
+    paperSize: 'a4',
+  },
   paymentMethods: ['Cash', 'Card', 'Bank Transfer', 'Online Payment'],
   terms:
     'Items may be returned within 14 days with this receipt. Sale items and custom pieces are final. Thank you for supporting Tareez.',
