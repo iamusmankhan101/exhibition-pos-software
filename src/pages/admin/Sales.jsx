@@ -6,10 +6,11 @@ import Icon from '../../components/Icon.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { formatDate, money } from '../../lib/format.js'
 import { filterOrders, salesSummary } from '../../lib/analytics.js'
+import { locationName } from '../../lib/domain.js'
 import { exportCsv, exportExcel, exportPdf } from '../../lib/csv.js'
 
 export default function Sales() {
-  const { state, user, activeExhibition, actions, can } = useApp()
+  const { state, user, sellLocationId, sellLocationName, actions, can } = useApp()
   const currency = useCurrency()
   const navigate = useNavigate()
   const { orderId } = useParams()
@@ -30,7 +31,7 @@ export default function Sales() {
 
   const orders = useMemo(() => {
     const base = filterOrders(state, {
-      exhibitionId: scope === 'exhibition' ? activeExhibition?.id : undefined,
+      exhibitionId: scope === 'exhibition' ? sellLocationId : undefined,
       from: from || undefined,
       to: to || undefined,
       salespersonId: ownOnly ? user.id : salesperson === 'All' ? undefined : salesperson,
@@ -46,7 +47,7 @@ export default function Sales() {
         order.items.some((item) => item.name.toLowerCase().includes(needle) || item.sku.toLowerCase().includes(needle))
       )
     })
-  }, [state, scope, activeExhibition, from, to, salesperson, ownOnly, user.id, status, query])
+  }, [state, scope, sellLocationId, from, to, salesperson, ownOnly, user.id, status, query])
 
   const summary = useMemo(() => salesSummary(orders), [orders])
   const selected = orderId ? state.orders.find((entry) => entry.id === orderId) : null
@@ -55,7 +56,7 @@ export default function Sales() {
   const columns = [
     { label: 'Invoice', value: (order) => order.invoiceNo },
     { label: 'Date', value: (order) => formatDate(order.createdAt, true) },
-    { label: 'Exhibition', value: (order) => state.exhibitions.find((e) => e.id === order.exhibitionId)?.name || '' },
+    { label: 'Sold at', value: (order) => locationName(state, order.exhibitionId) },
     { label: 'Customer', value: (order) => order.customerName },
     { label: 'Salesperson', value: (order) => order.salespersonName },
     { label: 'Items', value: (order) => order.items.reduce((sum, item) => sum + item.quantity, 0) },
@@ -105,7 +106,7 @@ export default function Sales() {
             onChange={(event) => setQuery(event.target.value)}
           />
           <select className="select" style={{ width: 170 }} value={scope} onChange={(e) => setScope(e.target.value)}>
-            <option value="exhibition">{activeExhibition?.name || 'Current exhibition'}</option>
+            <option value="exhibition">{sellLocationName}</option>
             <option value="all">All exhibitions</option>
           </select>
           <select className="select" style={{ width: 150 }} value={status} onChange={(e) => setStatus(e.target.value)}>
@@ -272,7 +273,6 @@ export default function Sales() {
 function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete }) {
   const { state, can } = useApp()
   const currency = useCurrency()
-  const exhibition = state.exhibitions.find((entry) => entry.id === order.exhibitionId)
   const refundable =
     order.status === 'Completed' || order.status === 'Partially Refunded' || order.status === 'Pending'
 
@@ -282,7 +282,7 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete })
       onClose={onClose}
       size="lg"
       title={order.invoiceNo}
-      subtitle={`${formatDate(order.createdAt, true)} · ${exhibition?.name || ''}`}
+      subtitle={`${formatDate(order.createdAt, true)} · ${locationName(state, order.exhibitionId)}`}
       footer={
         <>
           <Link className="btn" to={`/r/${order.id}`} target="_blank" rel="noopener">

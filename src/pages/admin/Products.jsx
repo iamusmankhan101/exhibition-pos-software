@@ -31,7 +31,7 @@ const blankProduct = () => ({
 })
 
 export default function Products() {
-  const { state, activeExhibition, actions, can } = useApp()
+  const { state, activeExhibition, sellLocationId, actions, can } = useApp()
   const currency = useCurrency()
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All')
@@ -61,11 +61,12 @@ export default function Products() {
       .map((product) => ({
         product,
         mainStock: product.variants.reduce((sum, variant) => sum + getStock(state, MAIN_LOCATION, variant.id), 0),
-        exhibitionStock: activeExhibition
-          ? product.variants.reduce((sum, variant) => sum + getStock(state, activeExhibition.id, variant.id), 0)
-          : 0,
+        exhibitionStock: product.variants.reduce(
+          (sum, variant) => sum + getStock(state, sellLocationId, variant.id),
+          0,
+        ),
       }))
-  }, [state, query, category, activeExhibition])
+  }, [state, query, category, sellLocationId])
 
   const selection = useSelection(rows, (row) => row.product.id)
 
@@ -128,7 +129,7 @@ export default function Products() {
                 <th className="right">Price</th>
                 {can('view.cost') && <th className="right">Cost</th>}
                 <th className="right">Warehouse</th>
-                <th className="right">Exhibition</th>
+                <th className="right">{activeExhibition ? 'Exhibition' : 'Selling from'}</th>
                 <th>Status</th>
                 <th />
               </tr>

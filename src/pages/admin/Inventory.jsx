@@ -8,6 +8,12 @@ import { exportCsv } from '../../lib/csv.js'
 
 export default function Inventory() {
   const { state, activeExhibition, actions, can } = useApp()
+  // Transfers always need a real exhibition, whether or not one is selected for
+  // selling, so this page keeps its own target.
+  const [targetId, setTargetId] = useState(
+    () => activeExhibition?.id || state.exhibitions.find((entry) => entry.status !== 'Completed')?.id || '',
+  )
+  const target = state.exhibitions.find((entry) => entry.id === targetId) || null
   const currency = useCurrency()
   const [tab, setTab] = useState('levels')
   const [query, setQuery] = useState('')
@@ -26,7 +32,7 @@ export default function Inventory() {
         product,
         variant,
         main: getStock(state, MAIN_LOCATION, variant.id),
-        exhibition: activeExhibition ? getStock(state, activeExhibition.id, variant.id) : 0,
+        exhibition: target ? getStock(state, target.id, variant.id) : 0,
       }))
       .filter(
         (row) =>
@@ -36,28 +42,28 @@ export default function Inventory() {
           String(row.variant.barcode).includes(needle) ||
           row.variant.color.toLowerCase().includes(needle),
       )
-  }, [state, query, activeExhibition])
+  }, [state, query, target])
 
   const queued = Object.entries(transfers).filter(([, quantity]) => Number(quantity) > 0)
 
   const runTransfers = () => {
-    if (!activeExhibition) return
+    if (!target) return
     let moved = 0
     for (const [variantId, quantity] of queued) {
       const amount = Number(quantity)
-      const source = direction === 'toExhibition' ? MAIN_LOCATION : activeExhibition.id
-      const target = direction === 'toExhibition' ? activeExhibition.id : MAIN_LOCATION
+      const source = direction === 'toExhibition' ? MAIN_LOCATION : target.id
+      const destination = direction === 'toExhibition' ? target.id : MAIN_LOCATION
       const available = getStock(state, source, variantId)
       if (amount > available) {
         actions.toast(`Not enough stock to move ${amount} units`, 'warn')
         continue
       }
-      actions.transferStock({ variantId, fromLocation: source, toLocation: target, quantity: amount })
+      actions.transferStock({ variantId, fromLocation: source, toLocation: destination, quantity: amount })
       moved += 1
     }
     if (moved) {
       actions.toast(
-        `${moved} product${moved === 1 ? '' : 's'} moved ${direction === 'toExhibition' ? 'to' : 'from'} ${activeExhibition.name}`,
+        `${moved} product${moved === 1 ? '' : 's'} moved ${direction === 'toExhibition' ? 'to' : 'from'} ${target.name}`,
         'success',
       )
     }
@@ -119,6 +125,19 @@ export default function Inventory() {
         />
         {tab === 'levels' && (
           <>
+            <select
+              className="select"
+              style={{ width: 210 }}
+              value={targetId}
+              onChange={(event) => setTargetId(event.target.value)}
+            >
+              <option value="">No exhibition</option>
+              {state.exhibitions.map((exhibition) => (
+                <option key={exhibition.id} value={exhibition.id}>
+                  {exhibition.name}
+                </option>
+              ))}
+            </select>
             <select className="select" style={{ width: 210 }} value={direction} onChange={(e) => setDirection(e.target.value)}>
               <option value="toExhibition">Warehouse → Exhibition</option>
               <option value="toWarehouse">Exhibition → Warehouse</option>
@@ -126,7 +145,7 @@ export default function Inventory() {
             <button className="btn" onClick={() => exportCsv('tareez-inventory', stockColumns, rows)}>
               Export
             </button>
-            <button className="btn btn-primary" disabled={!queued.length || !activeExhibition} onClick={runTransfers}>
+            <button className="btn btn-primary" disabled={!queued.length || !target} onClick={runTransfers}>
               Transfer {queued.length || ''}
             </button>
           </>
@@ -137,8 +156,17 @@ export default function Inventory() {
         <>
           <div className="card" style={{ padding: 14, background: 'var(--surface-2)' }}>
             <div className="small muted">
-              Enter quantities in the transfer column, then press Transfer. Exhibition stock is kept separate from
-              the warehouse so stall sales never touch main inventory.
+              {target ? (
+                <>
+                  Enter quantities in the transfer column, then press Transfer. Exhibition stock is kept
+                  separate from the warehouse so stall sales never touch main inventory.
+                </>
+              ) : (
+                <>
+                  Showing warehouse stock only. Pick an exhibition above to move stock onto a stand — sales
+                  made without an exhibition come straight out of the warehouse.
+                </>
+              )}
             </div>
           </div>
 
@@ -157,7 +185,7 @@ export default function Inventory() {
                     <th>Product</th>
                     <th>SKU</th>
                     <th className="right">Warehouse</th>
-                    <th className="right">{activeExhibition?.name || 'Exhibition'}</th>
+                    <th className="right">{target?.name || 'Exhibition'}</th>
                     <th className="right" style={{ width: 130 }}>
                       Transfer
                     </th>
@@ -297,6 +325,7 @@ export default function Inventory() {
       {deletingStock && (
         <ClearStockModal
           rows={deletingStock}
+          target={target}
           onClose={() => setDeletingStock(null)}
           onDone={() => {
             stockSelection.clear()
@@ -308,6 +337,7 @@ export default function Inventory() {
       {adjusting && (
         <AdjustModal
           row={adjusting}
+          target={target}
           onClose={() => setAdjusting(null)}
           currency={currency}
           onSave={(locationId, quantity, note) => {
@@ -324,8 +354,8 @@ export default function Inventory() {
  * Bulk clear-down for exhibition stock: either send it back to the warehouse or
  * write it off. Both are recorded as movements so the numbers stay explainable.
  */
-function ClearStockModal({ rows, onClose, onDone }) {
-  const { activeExhibition, actions } = useApp()
+function ClearStockModal({ rows, target, onClose, onDone }) {
+  const { actions } = useApp()
   const currency = useCurrency()
   const [mode, setMode] = useState('return')
 
@@ -338,14 +368,14 @@ function ClearStockModal({ rows, onClose, onDone }) {
       if (mode === 'return') {
         actions.transferStock({
           variantId: row.variant.id,
-          fromLocation: activeExhibition.id,
+          fromLocation: target.id,
           toLocation: MAIN_LOCATION,
           quantity: row.exhibition,
         })
       } else {
         actions.adjustStock({
           variantId: row.variant.id,
-          locationId: activeExhibition.id,
+          locationId: target.id,
           quantity: 0,
           note: 'Stock cleared by admin',
         })
@@ -388,7 +418,7 @@ function ClearStockModal({ rows, onClose, onDone }) {
 
       {mode === 'return' ? (
         <p className="small muted" style={{ margin: 0 }}>
-          Moves the stock out of {activeExhibition?.name} and back into the main warehouse. Nothing is
+          Moves the stock out of {target?.name} and back into the main warehouse. Nothing is
           lost — this is the usual way to strip a stand at the end of an event.
         </p>
       ) : (
@@ -418,9 +448,8 @@ function ClearStockModal({ rows, onClose, onDone }) {
   )
 }
 
-function AdjustModal({ row, onClose, onSave }) {
-  const { activeExhibition } = useApp()
-  const [location, setLocation] = useState(activeExhibition?.id || MAIN_LOCATION)
+function AdjustModal({ row, target, onClose, onSave }) {
+  const [location, setLocation] = useState(target?.id || MAIN_LOCATION)
   const [quantity, setQuantity] = useState(location === MAIN_LOCATION ? row.main : row.exhibition)
   const [note, setNote] = useState('')
 
@@ -453,7 +482,7 @@ function AdjustModal({ row, onClose, onSave }) {
           }}
         >
           <option value={MAIN_LOCATION}>Main warehouse</option>
-          {activeExhibition && <option value={activeExhibition.id}>{activeExhibition.name}</option>}
+          {target && <option value={target.id}>{target.name}</option>}
         </select>
       </Field>
 

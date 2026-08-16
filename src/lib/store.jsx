@@ -1106,6 +1106,11 @@ export function AppProvider({ children }) {
       session,
       user,
       activeExhibition,
+      // Where stock is taken from. With no exhibition chosen the POS sells
+      // straight from the main warehouse.
+      sellLocationId: activeExhibition?.id || MAIN_LOCATION,
+      sellLocationName: activeExhibition?.name || 'Direct sales',
+      sellingAtExhibition: Boolean(activeExhibition),
       online,
       syncing,
       deviceId,

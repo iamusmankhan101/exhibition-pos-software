@@ -59,6 +59,11 @@ balances, so stall sales never touch warehouse stock. Transfers move stock betwe
 change writes a stock movement with a running balance. Overselling is blocked by default and can be
 enabled per business, in which case negative stock is flagged for review.
 
+**Exhibitions are optional.** Choosing one scopes the POS to that stand's stock and reporting. With
+none selected the POS sells directly from the main warehouse, and those sales are grouped as
+"Direct sales" everywhere they appear — useful for shop-floor trading, studio visits or a quick sale
+between events.
+
 **Customers** — searchable database, created at checkout or in admin, with purchase history and
 lifetime spend. Marketing consent is stored separately from transactional contact, and the
 "opted in only" export exists so campaigns cannot accidentally include people who never agreed.

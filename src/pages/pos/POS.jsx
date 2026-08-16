@@ -29,11 +29,11 @@ function loadCart(exhibitionId) {
 }
 
 export default function POS() {
-  const { state, user, activeExhibition, actions, can } = useApp()
+  const { state, user, activeExhibition, sellLocationId, sellLocationName, actions, can } = useApp()
   const currency = useCurrency()
   const navigate = useNavigate()
 
-  const [cart, setCart] = useState(() => loadCart(activeExhibition?.id))
+  const [cart, setCart] = useState(() => loadCart(sellLocationId))
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All')
   const [scanOpen, setScanOpen] = useState(false)
@@ -44,7 +44,7 @@ export default function POS() {
   const [discountItem, setDiscountItem] = useState(null)
   const [clock, setClock] = useState(() => new Date().toISOString())
 
-  const exhibitionId = activeExhibition?.id
+  const exhibitionId = sellLocationId
   const cartRef = useRef(cart)
   cartRef.current = cart
 
@@ -237,17 +237,6 @@ export default function POS() {
 
   /* ----------------------------------------------------------------- view */
 
-  if (!activeExhibition) {
-    return (
-      <div className="boot">
-        <p>No exhibition selected.</p>
-        <button className="btn btn-primary" onClick={() => navigate('/select-exhibition')}>
-          Choose an exhibition
-        </button>
-      </div>
-    )
-  }
-
   return (
     <div className="pos">
       <div className="pos-left">
@@ -269,10 +258,11 @@ export default function POS() {
                 whiteSpace: 'nowrap',
               }}
             >
-              {activeExhibition.name}
+              {sellLocationName}
             </div>
             <div className="small muted">
               {user.name} · {formatTime(clock)}
+              {!activeExhibition && ' · selling from main stock'}
             </div>
           </div>
           <SyncPill />
@@ -667,7 +657,7 @@ function LineDiscountModal({ item, maxPercent, onClose, onApply }) {
 }
 
 function VariantPicker({ product, onClose, onPick }) {
-  const { state, activeExhibition } = useApp()
+  const { state, sellLocationId } = useApp()
   const currency = useCurrency()
   const [quantity, setQuantity] = useState(1)
   const [selected, setSelected] = useState(null)
@@ -681,7 +671,7 @@ function VariantPicker({ product, onClose, onPick }) {
 
   const variants = product.variants.map((variant) => ({
     ...variant,
-    stock: getStock(state, activeExhibition.id, variant.id),
+    stock: getStock(state, sellLocationId, variant.id),
   }))
   const active = selected ? variants.find((variant) => variant.id === selected) : null
   const max = active ? active.stock : 0

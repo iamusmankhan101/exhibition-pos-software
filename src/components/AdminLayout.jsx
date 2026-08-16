@@ -41,7 +41,7 @@ const SECTIONS = [
 ]
 
 export default function AdminLayout() {
-  const { state, user, activeExhibition, actions, can } = useApp()
+  const { state, user, activeExhibition, sellLocationId, sellLocationName, actions, can } = useApp()
   const currency = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
@@ -52,17 +52,17 @@ export default function AdminLayout() {
 
   const counts = useMemo(
     () => ({
-      sales: state.orders.filter((order) => order.exhibitionId === activeExhibition?.id).length,
+      sales: state.orders.filter((order) => order.exhibitionId === sellLocationId).length,
       products: state.products.length,
       customers: state.customers.length,
-      lowStock: activeExhibition ? lowStockRows(state, activeExhibition.id).length : 0,
+      lowStock: lowStockRows(state, sellLocationId).length,
     }),
-    [state, activeExhibition],
+    [state, sellLocationId],
   )
 
   const exhibitionSummary = useMemo(
-    () => salesSummary(filterOrders(state, { exhibitionId: activeExhibition?.id })),
-    [state, activeExhibition],
+    () => salesSummary(filterOrders(state, { exhibitionId: sellLocationId })),
+    [state, sellLocationId],
   )
 
   const allowed = (permission) =>
@@ -124,28 +124,32 @@ export default function AdminLayout() {
         </nav>
 
         <div className="sidebar-foot">
-          {activeExhibition && (
-            <div className="promo">
-              <div className="row" style={{ gap: 7 }}>
+          <div className="promo">
+            <div className="row" style={{ gap: 7 }}>
+              {activeExhibition ? (
                 <span className={`badge ${activeExhibition.status === 'Active' ? 'badge-good' : 'badge-warn'}`}>
                   <span className="dot" />
                   {activeExhibition.status}
                 </span>
-              </div>
-              <h4 style={{ marginTop: 4 }}>{activeExhibition.name}</h4>
-              <p>
-                {currency(exhibitionSummary.net)} from {exhibitionSummary.count} sales
-              </p>
-              <div className="row" style={{ gap: 6, marginTop: 8 }}>
-                <button className="btn btn-primary btn-sm grow" onClick={() => navigate('/pos')}>
-                  Sell
-                </button>
-                <button className="btn btn-sm grow" onClick={() => navigate('/select-exhibition')}>
-                  Switch
-                </button>
-              </div>
+              ) : (
+                <span className="badge">No exhibition</span>
+              )}
             </div>
-          )}
+            <h4 style={{ marginTop: 4 }}>{sellLocationName}</h4>
+            <p>
+              {activeExhibition
+                ? `${currency(exhibitionSummary.net)} from ${exhibitionSummary.count} sales`
+                : `Selling from main stock · ${currency(exhibitionSummary.net)} so far`}
+            </p>
+            <div className="row" style={{ gap: 6, marginTop: 8 }}>
+              <button className="btn btn-primary btn-sm grow" onClick={() => navigate('/pos')}>
+                Sell
+              </button>
+              <button className="btn btn-sm grow" onClick={() => navigate('/select-exhibition')}>
+                Switch
+              </button>
+            </div>
+          </div>
 
           <div className="user-chip">
             <Avatar name={user.name} />

@@ -24,6 +24,18 @@ export function inventoryKey(locationId, variantId) {
   return `${locationId}:${variantId}`
 }
 
+/**
+ * Human label for a stock location. Selling without an exhibition is a normal
+ * mode — stock simply comes from the main warehouse — so `MAIN` reads as a
+ * direct sale rather than as a missing value.
+ */
+export function locationName(state, locationId) {
+  if (!locationId || locationId === MAIN_LOCATION) return 'Direct sales'
+  return state.exhibitions.find((entry) => entry.id === locationId)?.name || 'Deleted exhibition'
+}
+
+export const isExhibition = (locationId) => Boolean(locationId) && locationId !== MAIN_LOCATION
+
 export function getStock(state, locationId, variantId) {
   return state.inventory[inventoryKey(locationId, variantId)]?.quantity ?? 0
 }

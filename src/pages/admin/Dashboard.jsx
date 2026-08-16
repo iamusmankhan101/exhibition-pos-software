@@ -16,11 +16,11 @@ import {
   topProducts,
 } from '../../lib/analytics.js'
 
-const RANGES = [
+const RANGES = (locationName) => [
   { value: 'today', label: 'Today' },
   { value: 'week', label: 'Last 7 days' },
-  { value: 'exhibition', label: 'This exhibition' },
-  { value: 'all', label: 'All time' },
+  { value: 'exhibition', label: `All of ${locationName}` },
+  { value: 'all', label: 'Everything, all time' },
 ]
 
 const METHOD_STYLE = {
@@ -39,7 +39,7 @@ const shiftDays = (days) => {
 }
 
 export default function Dashboard() {
-  const { state, activeExhibition } = useApp()
+  const { state, activeExhibition, sellLocationId, sellLocationName } = useApp()
   const currency = useCurrency()
   const navigate = useNavigate()
   const [range, setRange] = useState('today')
@@ -48,7 +48,7 @@ export default function Dashboard() {
   /* --------------------------------------------------------- filters */
 
   const { filter, priorFilter, periodLabel } = useMemo(() => {
-    const exhibitionId = activeExhibition?.id
+    const exhibitionId = sellLocationId
     if (range === 'today') {
       return {
         filter: { exhibitionId, from: shiftDays(0), to: shiftDays(0) },
@@ -65,7 +65,7 @@ export default function Dashboard() {
     }
     if (range === 'all') return { filter: {}, priorFilter: null, periodLabel: '' }
     return { filter: { exhibitionId }, priorFilter: null, periodLabel: '' }
-  }, [range, activeExhibition])
+  }, [range, sellLocationId])
 
   const orders = useMemo(() => filterOrders(state, filter), [state, filter])
   const summary = useMemo(() => salesSummary(orders), [orders])
@@ -78,20 +78,18 @@ export default function Dashboard() {
   const staff = useMemo(() => staffPerformance(state, filter), [state, filter])
   const products = useMemo(() => topProducts(state, filter, 5), [state, filter])
   const customers = useMemo(() => customerSummary(state, filter), [state, filter])
-  const lowStock = useMemo(
-    () => (activeExhibition ? lowStockRows(state, activeExhibition.id) : []),
-    [state, activeExhibition],
-  )
+  const lowStock = useMemo(() => lowStockRows(state, sellLocationId), [state, sellLocationId])
 
-  const exhibitionStock = useMemo(() => {
-    if (!activeExhibition) return 0
-    return state.products.reduce(
-      (sum, product) =>
-        sum +
-        product.variants.reduce((n, variant) => n + Math.max(0, getStock(state, activeExhibition.id, variant.id)), 0),
-      0,
-    )
-  }, [state, activeExhibition])
+  const exhibitionStock = useMemo(
+    () =>
+      state.products.reduce(
+        (sum, product) =>
+          sum +
+          product.variants.reduce((n, variant) => n + Math.max(0, getStock(state, sellLocationId, variant.id)), 0),
+        0,
+      ),
+    [state, sellLocationId],
+  )
 
   const delta = (current, previous) => {
     if (previous === null || previous === undefined || !previous) return null
@@ -106,7 +104,7 @@ export default function Dashboard() {
     const scoped = state.orders.filter(
       (order) =>
         order.status !== 'Cancelled' &&
-        (range === 'all' || !activeExhibition ? true : order.exhibitionId === activeExhibition.id),
+        (range === 'all' ? true : order.exhibitionId === sellLocationId),
     )
 
     if (chartMode === 'monthly') {
@@ -146,8 +144,9 @@ export default function Dashboard() {
       })
     }
     return days
-  }, [state.orders, chartMode, range, activeExhibition])
+  }, [state.orders, chartMode, range, sellLocationId])
 
+  const ranges = RANGES(sellLocationName)
   const chartTotal = chartData.reduce((sum, row) => sum + row.value, 0)
   const paymentTotal = payments.reduce((sum, row) => sum + Math.max(0, row.amount), 0)
 
@@ -158,7 +157,7 @@ export default function Dashboard() {
       <div className="row-between wrap page-head">
         <div>
           <h2>Overview</h2>
-          <p>Here is the summary of {activeExhibition?.name || 'your business'}</p>
+          <p>Here is the summary of {activeExhibition ? activeExhibition.name : 'your direct sales'}</p>
         </div>
         <div className="row" style={{ gap: 8 }}>
           <select
@@ -167,7 +166,7 @@ export default function Dashboard() {
             value={range}
             onChange={(event) => setRange(event.target.value)}
           >
-            {RANGES.map((option) => (
+            {ranges.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -195,8 +194,8 @@ export default function Dashboard() {
         />
         <OverviewCard
           icon="box"
-          name="Exhibition stock"
-          sub={activeExhibition?.name || 'No exhibition selected'}
+          name={activeExhibition ? 'Exhibition stock' : 'Warehouse stock'}
+          sub={activeExhibition ? activeExhibition.name : 'Main warehouse stock'}
           value={formatNumber(exhibitionStock)}
           meta={lowStock.length ? `${lowStock.length} low or out of stock` : 'All lines healthy'}
           metaTone={lowStock.length ? 'warn' : 'good'}
@@ -243,7 +242,7 @@ export default function Dashboard() {
           <div className="row-between" style={{ marginBottom: 4 }}>
             <div>
               <div className="card-title">Payment methods</div>
-              <div className="card-sub">{RANGES.find((r) => r.value === range).label}</div>
+              <div className="card-sub">{ranges.find((r) => r.value === range).label}</div>
             </div>
             <Link className="btn btn-sm" to="/admin/reports">
               <Icon name="plus" size={14} />
@@ -392,7 +391,7 @@ export default function Dashboard() {
           <div className="row-between wrap" style={{ padding: '16px 18px' }}>
             <div>
               <div className="card-title">Low &amp; out of stock</div>
-              <div className="card-sub">{activeExhibition?.name}</div>
+              <div className="card-sub">{sellLocationName}</div>
             </div>
             <Link className="btn btn-sm" to="/admin/inventory">
               Restock

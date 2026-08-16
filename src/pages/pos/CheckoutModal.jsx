@@ -12,7 +12,7 @@ import { Avatar, Field, Modal } from '../../components/ui.jsx'
 const STEPS = ['Customer', 'Discount', 'Payment']
 
 export default function CheckoutModal({ cart, onClose, onComplete }) {
-  const { state, user, activeExhibition, actions, online } = useApp()
+  const { state, user, sellLocationId, actions, online } = useApp()
   const currency = useCurrency()
 
   const [step, setStep] = useState(0)
@@ -48,7 +48,7 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
     try {
       const order = actions.completeSale({
         clientId: uid('cli'),
-        exhibitionId: activeExhibition.id,
+        exhibitionId: sellLocationId,
         customerId: customer?.id || null,
         customerName: customer?.name || 'Walk-in Customer',
         salespersonId: user.id,

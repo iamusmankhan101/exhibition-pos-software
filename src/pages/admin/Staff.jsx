@@ -17,13 +17,13 @@ const blank = () => ({
 })
 
 export default function Staff() {
-  const { state, user, activeExhibition, actions, can } = useApp()
+  const { state, user, sellLocationId, sellLocationName, actions, can } = useApp()
   const currency = useCurrency()
   const [scope, setScope] = useState('exhibition')
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
 
-  const filter = scope === 'exhibition' ? { exhibitionId: activeExhibition?.id } : {}
+  const filter = scope === 'exhibition' ? { exhibitionId: sellLocationId } : {}
   const performance = useMemo(() => staffPerformance(state, filter), [state, filter])
   const orders = useMemo(() => filterOrders(state, filter), [state, filter])
 
@@ -44,7 +44,7 @@ export default function Staff() {
       <div className="row-between wrap">
         <div className="seg">
           <button className={scope === 'exhibition' ? 'active' : ''} onClick={() => setScope('exhibition')}>
-            {activeExhibition?.name || 'Current exhibition'}
+            {sellLocationName}
           </button>
           <button className={scope === 'all' ? 'active' : ''} onClick={() => setScope('all')}>
             All time

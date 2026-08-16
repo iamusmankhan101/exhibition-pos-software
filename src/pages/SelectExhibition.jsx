@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { useApp, useCurrency } from '../lib/store.jsx'
 import { StatusBadge, SyncPill } from '../components/ui.jsx'
-import { formatDate } from '../lib/format.js'
+import { MAIN_LOCATION, formatDate } from '../lib/format.js'
 import { filterOrders, salesSummary } from '../lib/analytics.js'
 
 export default function SelectExhibition() {
@@ -18,6 +18,8 @@ export default function SelectExhibition() {
       return rank[a.status] - rank[b.status] || a.startDate.localeCompare(b.startDate)
     })
 
+  const directSummary = salesSummary(filterOrders(state, { exhibitionId: MAIN_LOCATION }))
+
   const choose = (exhibition) => {
     actions.selectExhibition(exhibition.id)
     navigate(user.role === 'salesperson' ? '/pos' : '/admin')
@@ -28,15 +30,44 @@ export default function SelectExhibition() {
       <div className="login-card" style={{ maxWidth: 560 }}>
         <div className="row-between" style={{ marginBottom: 18 }}>
           <div>
-            <h1 style={{ fontSize: 20 }}>Choose an exhibition</h1>
+            <h1 style={{ fontSize: 20 }}>Where are you selling?</h1>
             <p className="small muted" style={{ margin: '3px 0 0' }}>
-              Signed in as {user.name}
+              Signed in as {user.name} · an exhibition is optional
             </p>
           </div>
           <SyncPill />
         </div>
 
         <div className="stack-sm">
+          <button
+            className="list-item"
+            style={{
+              borderColor: !session.exhibitionId ? 'var(--brand)' : 'var(--line)',
+              background: !session.exhibitionId ? 'var(--brand-soft)' : 'var(--surface)',
+              alignItems: 'flex-start',
+            }}
+            onClick={() => {
+              actions.selectExhibition(null)
+              navigate('/pos')
+            }}
+          >
+            <div className="grow">
+              <div className="row" style={{ gap: 8 }}>
+                <span style={{ fontWeight: 650 }}>Direct sales</span>
+                <span className="badge">No exhibition</span>
+              </div>
+              <div className="small muted" style={{ marginTop: 3 }}>
+                Sell straight from main warehouse stock
+              </div>
+            </div>
+            <div className="right nowrap">
+              <div className="mono" style={{ fontWeight: 680 }}>
+                {currency(directSummary.net)}
+              </div>
+              <div className="small muted">{directSummary.count} sales</div>
+            </div>
+          </button>
+
           {visible.map((exhibition) => {
             const summary = salesSummary(filterOrders(state, { exhibitionId: exhibition.id }))
             const active = session.exhibitionId === exhibition.id
@@ -80,11 +111,9 @@ export default function SelectExhibition() {
               Admin dashboard
             </button>
           )}
-          {session.exhibitionId && (
-            <button className="btn grow" onClick={() => navigate('/pos')}>
-              Back to POS
-            </button>
-          )}
+          <button className="btn grow" onClick={() => navigate('/pos')}>
+            Back to POS
+          </button>
           <button
             className="btn btn-ghost"
             onClick={() => {
