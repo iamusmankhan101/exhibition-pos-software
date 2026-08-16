@@ -78,15 +78,20 @@ export function RowBox({ selection, id }) {
   )
 }
 
+/** Naive appending of "s" produces "entrys"/"boxs", so handle the usual cases. */
+export function pluralise(noun, count) {
+  if (count === 1) return noun
+  if (/[^aeiou]y$/i.test(noun)) return `${noun.slice(0, -1)}ies`
+  if (/(s|x|z|ch|sh)$/i.test(noun)) return `${noun}es`
+  return `${noun}s`
+}
+
 export function BulkBar({ selection, noun = 'item', onDelete, children }) {
   if (selection.count === 0) return null
   return (
     <div className="bulk-bar">
       <span className="bulk-count">{selection.count}</span>
-      <span className="grow">
-        {noun}
-        {selection.count === 1 ? '' : 's'} selected
-      </span>
+      <span className="grow">{pluralise(noun, selection.count)} selected</span>
       {children}
       <button className="btn btn-sm" onClick={selection.clear}>
         Clear
