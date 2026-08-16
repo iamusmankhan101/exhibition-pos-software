@@ -1,6 +1,9 @@
 import { useRef, useState } from 'react'
 import { useApp } from '../../lib/store.jsx'
-import { Confirm, Field, ImagePicker, Tabs } from '../../components/ui.jsx'
+import { Avatar, Confirm, Field, ImagePicker, Modal, Tabs } from '../../components/ui.jsx'
+import Icon from '../../components/Icon.jsx'
+import { uid } from '../../lib/format.js'
+import { ALL_PERMISSIONS, PERMISSION_GROUPS } from '../../lib/permissions.js'
 
 const CURRENCIES = [
   ['GBP', '£'],
@@ -75,6 +78,7 @@ export default function Settings() {
           { value: 'sales', label: 'Sales rules' },
           { value: 'receipts', label: 'Receipts' },
           { value: 'invoice', label: 'Invoice design' },
+          { value: 'roles', label: 'Roles & access' },
           { value: 'data', label: 'Data & devices' },
         ]}
       />
@@ -399,6 +403,8 @@ export default function Settings() {
         </div>
       )}
 
+      {tab === 'roles' && <RolesPanel draft={draft} patch={patch} />}
+
       {tab === 'data' && (
         <div className="grid grid-2">
           <div className="card col">
@@ -463,6 +469,364 @@ export default function Settings() {
         onClose={() => setResetting(false)}
       />
     </div>
+  )
+}
+
+/* ---------------------------------------------------------------- roles */
+
+function RolesPanel({ draft, patch }) {
+  const { state, actions, user } = useApp()
+  const [editing, setEditing] = useState(null)
+  const [deleting, setDeleting] = useState(null)
+
+  const memberCount = (roleId) => state.users.filter((entry) => entry.role === roleId).length
+  const pendingUsers = state.users.filter((entry) => !entry.active)
+
+  const newRole = () => ({
+    id: uid('role'),
+    name: '',
+    description: '',
+    system: false,
+    permissions: ['pos', 'sales.own'],
+    maxDiscountPercent: 10,
+  })
+
+  return (
+    <div className="col">
+      {pendingUsers.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <div className="card-title">Awaiting approval</div>
+              <div className="card-sub">
+                {pendingUsers.length} account{pendingUsers.length === 1 ? '' : 's'} signed up and cannot
+                sign in yet
+              </div>
+            </div>
+          </div>
+          <div className="stack-sm">
+            {pendingUsers.map((account) => (
+              <div key={account.id} className="list-item" style={{ cursor: 'default' }}>
+                <Avatar name={account.name} size={32} />
+                <div className="grow">
+                  <div style={{ fontWeight: 620, fontSize: 13.5 }}>{account.name}</div>
+                  <div className="small muted">
+                    {account.email} · requested{' '}
+                    {state.roles.find((role) => role.id === account.role)?.name || account.role}
+                  </div>
+                </div>
+                <button className="btn btn-sm btn-primary" onClick={() => actions.approveUser(account.id)}>
+                  Approve
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-split">
+        <div className="card col">
+          <div className="card-title">Sign-ups</div>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={draft.signup?.enabled !== false}
+              onChange={(event) => patch({ signup: { ...draft.signup, enabled: event.target.checked } })}
+            />
+            <span>
+              Allow people to create their own account
+              <div className="small muted">Turn this off to add staff by hand only.</div>
+            </span>
+          </label>
+
+          <Field label="New accounts get this role">
+            <select
+              className="select"
+              value={draft.signup?.defaultRole || 'salesperson'}
+              onChange={(event) => patch({ signup: { ...draft.signup, defaultRole: event.target.value } })}
+            >
+              {state.roles
+                .filter((role) => !role.permissions.includes('*'))
+                .map((role) => (
+                  <option key={role.id} value={role.id}>
+                    {role.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={draft.signup?.requireApproval !== false}
+              onChange={(event) =>
+                patch({ signup: { ...draft.signup, requireApproval: event.target.checked } })
+              }
+            />
+            <span>
+              An admin must approve new accounts
+              <div className="small muted">
+                Recommended — otherwise anyone with the link can sign in and start selling.
+              </div>
+            </span>
+          </label>
+        </div>
+
+        <div className="card col">
+          <div className="row-between">
+            <div>
+              <div className="card-title">Roles</div>
+              <div className="card-sub">What each kind of user is allowed to do</div>
+            </div>
+            <button className="btn btn-sm btn-primary" onClick={() => setEditing(newRole())}>
+              <Icon name="plus" size={14} />
+              New role
+            </button>
+          </div>
+
+          <div className="stack-sm">
+            {state.roles.map((role) => {
+              const count = memberCount(role.id)
+              const full = role.permissions.includes('*')
+              return (
+                <button key={role.id} className="list-item" onClick={() => setEditing(structuredClone(role))}>
+                  <div className="grow">
+                    <div className="row" style={{ gap: 7 }}>
+                      <span style={{ fontWeight: 620 }}>{role.name}</span>
+                      {role.system && <span className="badge">Built-in</span>}
+                      {role.id === user.role && <span className="badge badge-brand">You</span>}
+                    </div>
+                    <div className="small muted">{role.description || 'No description'}</div>
+                    <div className="small muted" style={{ marginTop: 3 }}>
+                      {full ? 'Full access' : `${role.permissions.length} permissions`} · max discount{' '}
+                      {role.maxDiscountPercent}% · {count} member{count === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                  <Icon name="chevronRight" size={16} />
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {editing && (
+        <RoleEditor
+          role={editing}
+          onClose={() => setEditing(null)}
+          onDelete={() => {
+            setDeleting(editing)
+            setEditing(null)
+          }}
+        />
+      )}
+
+      {deleting && <DeleteRoleModal role={deleting} onClose={() => setDeleting(null)} />}
+    </div>
+  )
+}
+
+function RoleEditor({ role, onClose, onDelete }) {
+  const { state, actions } = useApp()
+  const [entry, setEntry] = useState(role)
+  const [error, setError] = useState('')
+
+  const isNew = !state.roles.some((existing) => existing.id === role.id)
+  const fullAccess = entry.permissions.includes('*')
+  const members = state.users.filter((account) => account.role === role.id).length
+
+  const toggle = (key) => {
+    setEntry((current) => {
+      const base = current.permissions.includes('*') ? ALL_PERMISSIONS : current.permissions
+      const next = base.includes(key) ? base.filter((item) => item !== key) : [...base, key]
+      return { ...current, permissions: next }
+    })
+  }
+
+  const save = () => {
+    if (!entry.name.trim()) return setError('Give the role a name.')
+    try {
+      actions.saveRole({
+        ...entry,
+        name: entry.name.trim(),
+        maxDiscountPercent: Number(entry.maxDiscountPercent) || 0,
+      })
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    }
+    return undefined
+  }
+
+  const active = fullAccess ? ALL_PERMISSIONS : entry.permissions
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      title={isNew ? 'New role' : entry.name}
+      subtitle={
+        entry.system
+          ? 'Built-in role — permissions can be tuned but it cannot be deleted'
+          : `${members} member${members === 1 ? '' : 's'}`
+      }
+      footer={
+        <>
+          {!isNew && !entry.system && (
+            <button className="btn btn-danger" onClick={onDelete}>
+              <Icon name="trash" size={15} />
+              Delete role
+            </button>
+          )}
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={save}>
+            Save role
+          </button>
+        </>
+      }
+    >
+      {error && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {error}
+        </div>
+      )}
+
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <Field label="Role name">
+          <input
+            className="input"
+            value={entry.name}
+            onChange={(event) => setEntry({ ...entry, name: event.target.value })}
+          />
+        </Field>
+        <Field label="Max discount %" hint="Default for new users with this role.">
+          <input
+            className="input"
+            type="number"
+            min="0"
+            max="100"
+            value={entry.maxDiscountPercent}
+            onChange={(event) => setEntry({ ...entry, maxDiscountPercent: event.target.value })}
+          />
+        </Field>
+      </div>
+
+      <Field label="Description">
+        <input
+          className="input"
+          value={entry.description}
+          onChange={(event) => setEntry({ ...entry, description: event.target.value })}
+          placeholder="What this role is for"
+        />
+      </Field>
+
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={fullAccess}
+          onChange={(event) =>
+            setEntry({ ...entry, permissions: event.target.checked ? ['*'] : [...ALL_PERMISSIONS] })
+          }
+        />
+        <span>
+          Full access to everything
+          <div className="small muted">
+            Keeps this role in step with any permissions added in future versions.
+          </div>
+        </span>
+      </label>
+
+      {PERMISSION_GROUPS.map((group) => (
+        <div key={group.label}>
+          <div className="card-title" style={{ fontSize: 13.5, marginBottom: 8 }}>
+            {group.label}
+          </div>
+          <div className="stack-sm">
+            {group.items.map((item) => (
+              <label key={item.key} className="checkbox" style={{ opacity: fullAccess ? 0.55 : 1 }}>
+                <input
+                  type="checkbox"
+                  disabled={fullAccess}
+                  checked={active.includes(item.key)}
+                  onChange={() => toggle(item.key)}
+                />
+                <span>
+                  {item.label}
+                  {item.hint && <div className="small muted">{item.hint}</div>}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      ))}
+    </Modal>
+  )
+}
+
+function DeleteRoleModal({ role, onClose }) {
+  const { state, actions } = useApp()
+  const members = state.users.filter((account) => account.role === role.id)
+  const alternatives = state.roles.filter((entry) => entry.id !== role.id)
+  const [reassignTo, setReassignTo] = useState(alternatives[0]?.id)
+  const [error, setError] = useState('')
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Delete "${role.name}"?`}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={() => {
+              try {
+                actions.deleteRole(role.id, reassignTo)
+                onClose()
+              } catch (err) {
+                setError(err.message)
+              }
+            }}
+          >
+            Delete role
+          </button>
+        </>
+      }
+    >
+      {error && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {error}
+        </div>
+      )}
+
+      {members.length > 0 ? (
+        <>
+          <p className="small muted" style={{ margin: 0 }}>
+            {members.length} user{members.length === 1 ? ' is' : 's are'} on this role and must be moved to
+            another one.
+          </p>
+          <Field label="Move them to">
+            <select className="select" value={reassignTo} onChange={(event) => setReassignTo(event.target.value)}>
+              {alternatives.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </>
+      ) : (
+        <p className="small muted" style={{ margin: 0 }}>
+          Nobody is using this role, so nothing else changes.
+        </p>
+      )}
+    </Modal>
   )
 }
 

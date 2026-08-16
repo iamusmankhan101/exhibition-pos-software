@@ -5,12 +5,6 @@ import { uid } from '../../lib/format.js'
 import { filterOrders, staffPerformance } from '../../lib/analytics.js'
 import { exportCsv } from '../../lib/csv.js'
 
-const ROLES = [
-  { value: 'admin', label: 'Admin', blurb: 'Full access to every area including settings and cost prices.' },
-  { value: 'manager', label: 'Manager', blurb: 'Sales, inventory, customers, reports — no system settings or user management.' },
-  { value: 'salesperson', label: 'Salesperson', blurb: 'POS, customers and their own sales only. No cost prices or reports.' },
-]
-
 const blank = () => ({
   id: uid('usr'),
   name: '',
@@ -113,7 +107,7 @@ export default function Staff() {
                   </td>
                   <td>
                     <span className={`badge ${account.active ? 'badge-info' : ''}`} style={{ textTransform: 'capitalize' }}>
-                      {account.role}
+                      {state.roles.find((entry) => entry.id === account.role)?.name || account.role}
                     </span>
                     {!account.active && <span className="badge badge-danger" style={{ marginLeft: 6 }}>Inactive</span>}
                   </td>
@@ -174,12 +168,27 @@ export default function Staff() {
 }
 
 function UserEditor({ account, onClose, onSave, onDelete }) {
-  const { state } = useApp()
+  const { state, actions } = useApp()
   const [draft, setDraft] = useState(account)
   const [error, setError] = useState('')
+  const [password, setPassword] = useState('')
+  const [savingPassword, setSavingPassword] = useState(false)
 
+  const isNew = !state.users.some((entry) => entry.id === account.id)
   const patch = (fields) => setDraft((current) => ({ ...current, ...fields }))
-  const role = ROLES.find((entry) => entry.value === draft.role)
+  const role = state.roles.find((entry) => entry.id === draft.role)
+
+  const setUserPassword = async () => {
+    setSavingPassword(true)
+    try {
+      await actions.changePassword(draft.id, password)
+      setPassword('')
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSavingPassword(false)
+    }
+  }
 
   const save = () => {
     if (!draft.name.trim()) return setError('A name is required.')
@@ -188,9 +197,17 @@ function UserEditor({ account, onClose, onSave, onDelete }) {
       (entry) => entry.id !== draft.id && entry.pin === String(draft.pin) && entry.active,
     )
     if (clash) return setError(`That PIN is already used by ${clash.name}.`)
+    const emailClash = state.users.find(
+      (entry) =>
+        entry.id !== draft.id &&
+        entry.email &&
+        entry.email.toLowerCase() === draft.email.trim().toLowerCase(),
+    )
+    if (emailClash) return setError(`${emailClash.name} already uses that email address.`)
     return onSave({
       ...draft,
       name: draft.name.trim(),
+      email: draft.email.trim().toLowerCase(),
       pin: String(draft.pin),
       maxDiscountPercent: Number(draft.maxDiscountPercent) || 0,
     })
@@ -236,11 +253,18 @@ function UserEditor({ account, onClose, onSave, onDelete }) {
         </Field>
       </div>
 
-      <Field label="Role" hint={role?.blurb}>
-        <select className="select" value={draft.role} onChange={(event) => patch({ role: event.target.value })}>
-          {ROLES.map((entry) => (
-            <option key={entry.value} value={entry.value}>
-              {entry.label}
+      <Field label="Role" hint={role?.description}>
+        <select
+          className="select"
+          value={draft.role}
+          onChange={(event) => {
+            const next = state.roles.find((entry) => entry.id === event.target.value)
+            patch({ role: event.target.value, maxDiscountPercent: next?.maxDiscountPercent ?? 0 })
+          }}
+        >
+          {state.roles.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.name}
             </option>
           ))}
         </select>
@@ -270,8 +294,40 @@ function UserEditor({ account, onClose, onSave, onDelete }) {
 
       <label className="checkbox">
         <input type="checkbox" checked={draft.active} onChange={(event) => patch({ active: event.target.checked })} />
-        <span>Active — can sign in</span>
+        <span>
+          Active — can sign in
+          {!draft.active && !isNew && (
+            <div className="small" style={{ color: 'var(--warn)' }}>
+              This account cannot sign in until it is activated.
+            </div>
+          )}
+        </span>
       </label>
+
+      {!isNew && (
+        <>
+          <div className="card-title" style={{ fontSize: 13.5, marginTop: 4 }}>
+            Password
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              className="input grow"
+              type="password"
+              value={password}
+              autoComplete="new-password"
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder={draft.passwordHash ? 'Set a new password' : 'No password set yet'}
+            />
+            <button className="btn" disabled={!password || savingPassword} onClick={setUserPassword}>
+              {savingPassword ? 'Saving…' : 'Set'}
+            </button>
+          </div>
+          <p className="small muted" style={{ margin: 0 }}>
+            The password is saved immediately and separately from the rest of this form. Staff can also sign
+            in with their 4-digit PIN on a shared device.
+          </p>
+        </>
+      )}
     </Modal>
   )
 }

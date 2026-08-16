@@ -26,7 +26,7 @@ export default function Sales() {
   const [deleting, setDeleting] = useState(null)
 
   const ownOnly = !can('admin.sales')
-  const canDelete = can('admin.settings')
+  const canDelete = can('records.delete')
 
   const orders = useMemo(() => {
     const base = filterOrders(state, {
@@ -303,7 +303,7 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete })
               Cancel sale
             </button>
           )}
-          {can('admin.settings') && (
+          {can('records.delete') && (
             <button className="btn btn-danger" onClick={onDelete}>
               <Icon name="trash" size={15} />
               Delete

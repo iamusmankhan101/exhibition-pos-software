@@ -21,12 +21,18 @@ variants, 3 exhibitions, 18 customers and around 90 historical sales.
 
 ### Demo sign-ins
 
-| User | Role | PIN |
-| --- | --- | --- |
-| Ali Rahman | Admin | `1111` |
-| Sarah Bennett | Manager | `2222` |
-| Ahmed Khan | Salesperson | `3333` |
-| Layla Hassan | Salesperson | `4444` |
+Sign in with an email and the password `tareez2026`, or use the Staff PIN tab for fast switching on
+a shared device.
+
+| User | Email | Role | PIN |
+| --- | --- | --- | --- |
+| Ali Rahman | ali@tareez.com | Admin | `1111` |
+| Sarah Bennett | sarah@tareez.com | Manager | `2222` |
+| Ahmed Khan | ahmed@tareez.com | Salesperson | `3333` |
+| Layla Hassan | layla@tareez.com | Salesperson | `4444` |
+
+On a completely empty database the login screen asks you to create the owner account instead, and
+that first account gets full admin access.
 
 Other scripts:
 
@@ -74,8 +80,10 @@ closing report that freezes the final numbers and returns unsold stock to the wa
 order's discount ratio and tax treatment, restore exhibition stock and post a negative payment row
 for reconciliation.
 
-**Roles** — admin, manager and salesperson, enforced on every route. Salespeople never see cost
-prices, other people's performance, or system settings.
+**Accounts and roles** — email/password sign-in with PBKDF2-hashed passwords, self-service sign-up
+with optional admin approval, and a PIN keypad for switching staff mid-shift. Roles are editable in
+Settings → Roles & access: tick permissions per role, create custom roles, set each role's discount
+ceiling. A guard refuses any change that would leave nobody able to reach Settings.
 
 ## Offline behaviour
 
@@ -122,8 +130,11 @@ This is a complete front end with a local persistence layer, not a deployed mult
   desktop it downloads for the user to attach. Automatic send needs a server-side mailer.
 - **Failed-payment notifications** are the one alert type from the spec that is not implemented —
   with no payment gateway there is nothing that can fail.
-- **PIN authentication** suits shared stall devices; it is not a substitute for real accounts once a
-  server exists.
+- **Authentication runs on the device.** Passwords are hashed with PBKDF2-SHA256 and a per-user salt,
+  never stored in the clear, and `verifyPassword` is the single place to swap for a server call. But
+  with no server, the check itself happens client-side, so this is credential hygiene rather than
+  access control — anyone holding the device can read IndexedDB directly. Roles and permissions are
+  the right shape for server enforcement; today they gate the UI.
 
 ## Licence
 

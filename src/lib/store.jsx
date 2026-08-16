@@ -22,6 +22,8 @@ import {
 } from './domain.js'
 import { DEFAULT_SETTINGS, buildSeedState } from './seed.js'
 import { drainOutbox } from './sync.js'
+import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
+import { createCredential, emailProblem, normaliseEmail, passwordProblem, verifyPassword } from './auth.js'
 
 const STATE_KEY = 'state'
 const SESSION_KEY = 'tareez.session'
@@ -29,32 +31,7 @@ const DEVICE_KEY = 'tareez.device'
 
 const AppContext = createContext(null)
 
-export const ROLE_PERMISSIONS = {
-  admin: ['*'],
-  manager: [
-    'pos',
-    'admin.dashboard',
-    'admin.products',
-    'admin.inventory',
-    'admin.exhibitions',
-    'admin.sales',
-    'admin.customers',
-    'admin.reports',
-    'admin.staff',
-    'view.cost',
-    'refund',
-    'stock.adjust',
-  ],
-  // Destructive record deletion is deliberately admin-only: it rewrites history
-  // that reports and the audit trail depend on.
-  salesperson: ['pos', 'admin.customers', 'sales.own'],
-}
-
-export function can(user, permission) {
-  if (!user) return false
-  const granted = ROLE_PERMISSIONS[user.role] || []
-  return granted.includes('*') || granted.includes(permission)
-}
+export { userCan as can } from './permissions.js'
 
 function getDeviceId() {
   let device = localStorage.getItem(DEVICE_KEY)
@@ -92,6 +69,7 @@ function migrate(state) {
       invoiceDesign: { ...DEFAULT_SETTINGS.invoiceDesign, ...state.settings?.invoiceDesign },
       receiptChannels: { ...DEFAULT_SETTINGS.receiptChannels, ...state.settings?.receiptChannels },
     },
+    roles: state.roles?.length ? state.roles : DEFAULT_ROLES.map((role) => ({ ...role })),
     notifications: state.notifications || [],
     outbox: state.outbox || [],
     auditLogs: state.auditLogs || [],
@@ -118,10 +96,11 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     let cancelled = false
-    idbGet(STATE_KEY).then((stored) => {
-      if (cancelled) return
-      setStateRaw(stored ? migrate(stored) : buildSeedState())
-    })
+    idbGet(STATE_KEY)
+      .then(async (stored) => (stored ? migrate(stored) : await buildSeedState()))
+      .then((next) => {
+        if (!cancelled) setStateRaw(next)
+      })
     return () => {
       cancelled = true
     }
@@ -212,6 +191,28 @@ export function AppProvider({ children }) {
       ].slice(0, 800),
     }),
     [user, deviceId],
+  )
+
+  /** Audit entry attributed to a specific account (sign-in has no session yet). */
+  const withAuditAs = useCallback(
+    (draft, account, action, detail, entity = 'session') => ({
+      ...draft,
+      auditLogs: [
+        {
+          id: uid('log'),
+          userId: account.id,
+          userName: account.name,
+          action,
+          entity,
+          entityId: account.id,
+          detail,
+          deviceId,
+          createdAt: nowIso(),
+        },
+        ...draft.auditLogs,
+      ].slice(0, 800),
+    }),
+    [deviceId],
   )
 
   const withNotification = useCallback((draft, type, title, body, severity = 'info') => ({
@@ -343,37 +344,159 @@ export function AppProvider({ children }) {
       return removed
     }
 
-    return {
+    // Named so actions can call one another (sign-in delegates to startSession).
+    const api = {
       /* auth */
-      login(userId, pin) {
-        guard()
-        const account = stateRef.current.users.find((entry) => entry.id === userId)
-        if (!account) throw new Error('User not found.')
-        if (!account.active) throw new Error('This account has been deactivated.')
-        if (account.pin !== String(pin)) throw new Error('Incorrect PIN.')
-        setState((current) => ({
-          ...current,
-          auditLogs: [
-            {
-              id: uid('log'),
-              userId: account.id,
-              userName: account.name,
-              action: 'Signed in',
-              entity: 'session',
-              entityId: account.id,
-              detail: `Device ${deviceCodeFrom(deviceId)}`,
-              deviceId,
-              createdAt: nowIso(),
-            },
-            ...current.auditLogs,
-          ].slice(0, 800),
-        }))
+
+      /** Signs a verified account in and picks a sensible starting exhibition. */
+      startSession(account, method) {
+        setState((current) =>
+          withAuditAs(current, account, 'Signed in', `${method} · device ${deviceCodeFrom(deviceId)}`),
+        )
         const preferred =
           stateRef.current.exhibitions.find(
             (exhibition) => exhibition.status === 'Active' && exhibition.staffIds.includes(account.id),
           ) || stateRef.current.exhibitions.find((exhibition) => exhibition.status === 'Active')
-        updateSession({ userId: account.id, exhibitionId: preferred?.id || null })
+        updateSession({ userId: account.id, exhibitionId: preferred?.id || null, signedInAt: nowIso() })
         return account
+      },
+
+      /** PIN sign-in: fast switching between staff on a shared stall device. */
+      login(userId, pin) {
+        guard()
+        const account = stateRef.current.users.find((entry) => entry.id === userId)
+        if (!account) throw new Error('User not found.')
+        if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
+        if (account.pin !== String(pin)) throw new Error('Incorrect PIN.')
+        return api.startSession(account,'PIN')
+      },
+
+      async signIn(email, password) {
+        guard()
+        const account = stateRef.current.users.find(
+          (entry) => normaliseEmail(entry.email) === normaliseEmail(email),
+        )
+        // Same message either way so the form cannot be used to probe for
+        // which email addresses exist.
+        const ok = account ? await verifyPassword(password, account) : false
+        if (!ok) throw new Error('That email and password do not match.')
+        if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
+        return api.startSession(account,'Password')
+      },
+
+      async signUp({ name, email, password }) {
+        guard()
+        const current = stateRef.current
+        const isFirstAccount = current.users.length === 0
+
+        if (!isFirstAccount && !current.settings.signup?.enabled) {
+          throw new Error('Sign-ups are turned off. Ask an admin to create your account.')
+        }
+        if (!name?.trim()) throw new Error('Enter your name.')
+
+        const emailError = emailProblem(email)
+        if (emailError) throw new Error(emailError)
+        const passwordError = passwordProblem(password)
+        if (passwordError) throw new Error(passwordError)
+
+        if (current.users.some((entry) => normaliseEmail(entry.email) === normaliseEmail(email))) {
+          throw new Error('An account already uses that email address.')
+        }
+
+        const credential = await createCredential(password)
+        // The very first account owns the system, otherwise use the configured
+        // default role and approval rule.
+        const roleId = isFirstAccount ? 'admin' : current.settings.signup.defaultRole
+        const role = current.roles.find((entry) => entry.id === roleId) || current.roles[0]
+        const needsApproval = !isFirstAccount && current.settings.signup.requireApproval
+
+        // A free PIN so the account can also use fast stall sign-in.
+        const takenPins = new Set(current.users.map((entry) => entry.pin))
+        let pin = ''
+        for (let attempt = 0; attempt < 500 && !pin; attempt += 1) {
+          const candidate = String(Math.floor(1000 + Math.random() * 9000))
+          if (!takenPins.has(candidate)) pin = candidate
+        }
+
+        const account = {
+          id: uid('usr'),
+          name: name.trim(),
+          email: normaliseEmail(email),
+          phone: '',
+          role: role.id,
+          pin,
+          active: !needsApproval,
+          maxDiscountPercent: role.maxDiscountPercent ?? 0,
+          createdAt: nowIso(),
+          ...credential,
+        }
+
+        setState((draft) => {
+          let next = { ...draft, users: [...draft.users, account] }
+          next = withAuditAs(
+            next,
+            account,
+            'Created account',
+            `${account.email} · ${role.name}${needsApproval ? ' · awaiting approval' : ''}`,
+          )
+          if (needsApproval) {
+            next = withNotification(
+              next,
+              'account',
+              'New account awaiting approval',
+              `${account.name} (${account.email}) signed up as ${role.name}.`,
+              'warn',
+            )
+          }
+          return withOutbox(next, 'user.signup', account.id, { id: account.id, email: account.email })
+        })
+
+        if (needsApproval) {
+          return { account, pending: true }
+        }
+        api.startSession(account, 'Sign-up')
+        return { account, pending: false }
+      },
+
+      async changePassword(userId, password) {
+        const problem = passwordProblem(password)
+        if (problem) throw new Error(problem)
+        const credential = await createCredential(password)
+        setState((current) => {
+          const account = current.users.find((entry) => entry.id === userId)
+          return withAudit(
+            {
+              ...current,
+              users: current.users.map((entry) =>
+                entry.id === userId ? { ...entry, ...credential } : entry,
+              ),
+            },
+            'Changed password',
+            account?.name || userId,
+            'user',
+            userId,
+          )
+        })
+        toast('Password updated', 'success')
+      },
+
+      approveUser(userId) {
+        setState((current) => {
+          const account = current.users.find((entry) => entry.id === userId)
+          return withAudit(
+            {
+              ...current,
+              users: current.users.map((entry) =>
+                entry.id === userId ? { ...entry, active: true } : entry,
+              ),
+            },
+            'Approved account',
+            account?.name || userId,
+            'user',
+            userId,
+          )
+        })
+        toast('Account approved', 'success')
       },
 
       logout() {
@@ -849,6 +972,68 @@ export function AppProvider({ children }) {
         )
       },
 
+      /* roles */
+      saveRole(role) {
+        let error = null
+        setState((current) => {
+          const exists = current.roles.some((entry) => entry.id === role.id)
+          const roles = exists
+            ? current.roles.map((entry) => (entry.id === role.id ? role : entry))
+            : [...current.roles, role]
+
+          // Never allow a change that leaves nobody able to reach Settings.
+          if (wouldLoseAdminAccess(current.users, roles)) {
+            error = new Error(
+              'That would leave no active user with access to Settings. Give another role admin access first.',
+            )
+            return current
+          }
+
+          return withAudit(
+            { ...current, roles },
+            exists ? 'Updated role' : 'Created role',
+            `${role.name} · ${role.permissions.includes('*') ? 'full access' : `${role.permissions.length} permissions`}`,
+            'role',
+            role.id,
+          )
+        })
+        if (error) throw error
+        toast(`Role "${role.name}" saved`, 'success')
+      },
+
+      deleteRole(roleId, reassignTo) {
+        let error = null
+        setState((current) => {
+          const role = current.roles.find((entry) => entry.id === roleId)
+          if (!role) return current
+          if (role.system) {
+            error = new Error('Built-in roles cannot be deleted.')
+            return current
+          }
+
+          const users = current.users.map((entry) =>
+            entry.role === roleId ? { ...entry, role: reassignTo } : entry,
+          )
+          const roles = current.roles.filter((entry) => entry.id !== roleId)
+
+          if (wouldLoseAdminAccess(users, roles)) {
+            error = new Error('That would leave no active user with access to Settings.')
+            return current
+          }
+
+          const moved = current.users.filter((entry) => entry.role === roleId).length
+          return withAudit(
+            { ...current, users, roles },
+            'Deleted role',
+            `${role.name}${moved ? ` · ${moved} user(s) moved to ${reassignTo}` : ''}`,
+            'role',
+            roleId,
+          )
+        })
+        if (error) throw error
+        toast('Role deleted', 'warn')
+      },
+
       /* settings */
       saveSettings(settings) {
         setState((current) => withAudit({ ...current, settings }, 'Updated settings', '', 'settings', 'settings'))
@@ -868,8 +1053,8 @@ export function AppProvider({ children }) {
       },
 
       /* data */
-      resetDemoData() {
-        const fresh = buildSeedState()
+      async resetDemoData() {
+        const fresh = await buildSeedState()
         setStateRaw(fresh)
         persist(fresh)
         updateSession({ exhibitionId: fresh.exhibitions[0].id })
@@ -898,9 +1083,12 @@ export function AppProvider({ children }) {
 
       toast,
     }
+
+    return api
   }, [
     setState,
     withAudit,
+    withAuditAs,
     withNotification,
     withOutbox,
     toast,
@@ -925,7 +1113,8 @@ export function AppProvider({ children }) {
       pendingSync: state?.outbox.filter((entry) => entry.status === 'pending').length || 0,
       toasts,
       actions,
-      can: (permission) => can(user, permission),
+      roles: state?.roles || DEFAULT_ROLES,
+      can: (permission) => userCan(user, state?.roles, permission),
     }),
     [state, session, user, activeExhibition, online, syncing, deviceId, deviceCode, toasts, actions],
   )

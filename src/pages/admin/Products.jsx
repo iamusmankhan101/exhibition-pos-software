@@ -38,7 +38,7 @@ export default function Products() {
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [labels, setLabels] = useState(null)
-  const canDelete = can('admin.settings')
+  const canDelete = can('records.delete')
 
   const categories = useMemo(
     () => ['All', ...new Set(state.products.map((product) => product.category).filter(Boolean))],

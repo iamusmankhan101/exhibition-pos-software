@@ -2,6 +2,11 @@
 
 import { MAIN_LOCATION, money, uid } from './format.js'
 import { MOVEMENT_TYPES, applyStockChange, createOrder, getStock, transferStock } from './domain.js'
+import { createCredential } from './auth.js'
+import { DEFAULT_ROLES } from './permissions.js'
+
+/** Every demo account uses this password; the PIN is the quick way in. */
+export const DEMO_PASSWORD = 'tareez2026'
 
 export const DEFAULT_SETTINGS = {
   business: {
@@ -44,6 +49,11 @@ export const DEFAULT_SETTINGS = {
   marketingConsentText:
     'I would like to hear from Tareez about new collections, exhibition invitations and offers.',
   receiptFooter: 'Thank you for visiting our stall — we hope to see you again.',
+  signup: {
+    enabled: true,
+    defaultRole: 'salesperson',
+    requireApproval: true,
+  },
 }
 
 const CATEGORIES = ['Scarves', 'Abayas', 'Dresses', 'Kaftans', 'Accessories']
@@ -206,7 +216,7 @@ function makeCustomer(index) {
   }
 }
 
-export function buildSeedState() {
+export async function buildSeedState() {
   const now = new Date()
   const iso = (offsetDays, hour = 12, minute = 0) => {
     const date = new Date(now)
@@ -214,6 +224,8 @@ export function buildSeedState() {
     date.setHours(hour, minute, 0, 0)
     return date.toISOString()
   }
+
+  const credential = await createCredential(DEMO_PASSWORD)
 
   const users = [
     {
@@ -226,6 +238,7 @@ export function buildSeedState() {
       active: true,
       maxDiscountPercent: 100,
       createdAt: iso(-90),
+      ...credential,
     },
     {
       id: uid('usr'),
@@ -237,6 +250,7 @@ export function buildSeedState() {
       active: true,
       maxDiscountPercent: 30,
       createdAt: iso(-80),
+      ...credential,
     },
     {
       id: uid('usr'),
@@ -248,6 +262,7 @@ export function buildSeedState() {
       active: true,
       maxDiscountPercent: 15,
       createdAt: iso(-60),
+      ...credential,
     },
     {
       id: uid('usr'),
@@ -259,6 +274,7 @@ export function buildSeedState() {
       active: true,
       maxDiscountPercent: 10,
       createdAt: iso(-30),
+      ...credential,
     },
   ]
 
@@ -311,6 +327,7 @@ export function buildSeedState() {
   let state = {
     version: 1,
     settings: DEFAULT_SETTINGS,
+    roles: DEFAULT_ROLES.map((role) => ({ ...role })),
     users,
     products,
     exhibitions,

@@ -41,7 +41,7 @@ export default function Customers() {
   }, [state.customers, query, consentOnly])
 
   const selection = useSelection(rows)
-  const canDelete = can('admin.settings')
+  const canDelete = can('records.delete')
 
   const consented = state.customers.filter((customer) => customer.marketingConsent).length
   const totalSpend = state.customers.reduce((sum, customer) => sum + (customer.totalSpend || 0), 0)

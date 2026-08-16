@@ -116,7 +116,7 @@ export default function Exhibitions() {
                     </button>
                   )
                 )}
-                {can('admin.settings') && (
+                {can('records.delete') && (
                   <button
                     className="btn btn-sm btn-ghost"
                     title="Delete exhibition"

@@ -16,7 +16,7 @@ export default function Inventory() {
   const [direction, setDirection] = useState('toExhibition')
   const [deletingMovements, setDeletingMovements] = useState(null)
   const [deletingStock, setDeletingStock] = useState(null)
-  const canDelete = can('admin.settings')
+  const canDelete = can('records.delete')
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
