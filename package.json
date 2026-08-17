@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.78.0",
     "html5-qrcode": "^2.3.8",
     "jspdf": "^2.5.2",
     "qrcode": "^1.5.4",

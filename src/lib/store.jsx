@@ -23,7 +23,9 @@ import {
   transferStock,
 } from './domain.js'
 import { DEFAULT_SETTINGS, buildSeedState } from './seed.js'
-import { drainOutbox } from './sync.js'
+import { drainOutbox, setSyncAdapter } from './sync.js'
+import { isConfigured as supabaseConfigured } from './supabase.js'
+import { createSupabaseAdapter } from './supabaseAdapter.js'
 import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
 import { createCredential, emailProblem, normaliseEmail, passwordProblem, verifyPassword } from './auth.js'
 
@@ -302,6 +304,14 @@ export function AppProvider({ children }) {
   )
 
   /* ---------------------------------------------------------- sync loop */
+
+  // Point the outbox at Supabase when credentials are present. Without them the
+  // local adapter stays in place and the app runs exactly as it always has, so
+  // an unreachable backend can never stop a sale being taken.
+  useEffect(() => {
+    if (!supabaseConfigured) return
+    setSyncAdapter(createSupabaseAdapter({ getState: () => stateRef.current }))
+  }, [])
 
   useEffect(() => {
     const goOnline = () => setOnline(true)

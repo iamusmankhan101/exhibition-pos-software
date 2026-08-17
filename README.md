@@ -115,8 +115,8 @@ attach it to an email or WhatsApp message.
 exhibition, salesperson, VAT breakdown, QR, terms), with a live preview and a downloadable sample.
 
 **Reporting** — dashboard with sales trend, sales by hour, sales by category, payment split and
-staff ranking; sales, product,
-category, inventory, payment, discount, returns, staff and customer reports, each exportable to CSV,
+staff ranking; sales, product, category, inventory, payment, discount, returns, staff and customer
+reports, each exportable to CSV,
 Excel or PDF; and an exhibition closing report that freezes the final numbers — including the
 category split, the busiest trading hours and everything that came back — and returns unsold stock
 to the warehouse.
@@ -136,6 +136,52 @@ took stay on the record.
 with optional admin approval, and a PIN keypad for switching staff mid-shift. Roles are editable in
 Settings → Roles & access: tick permissions per role, create custom roles, set each role's discount
 ceiling. A guard refuses any change that would leave nobody able to reach Settings.
+
+## Backend (optional)
+
+The app runs entirely on local data with no backend at all. Connecting Supabase adds a durable copy,
+reporting off-device and the groundwork for a second till — **without** becoming a dependency: with
+no credentials configured the local adapter stays in place, so an unreachable backend can never stop
+a sale being taken at the stall.
+
+```bash
+cp .env.example .env.local     # fill in from Supabase → Settings → API
+```
+
+Then run `supabase/schema.sql` once in the SQL editor. It creates the tables, indexes, row-level
+security policies mirroring `permissions.js`, and adds `orders`, `payments` and `inventory` to the
+realtime publication for the live owner dashboard.
+
+The Supabase SDK is ~180KB, so it is loaded dynamically — an unconfigured build never downloads it,
+and a configured one fetches it after the POS is already interactive.
+
+### How the sync works
+
+`sync.js` drains the outbox through a pluggable adapter. `supabaseAdapter.js` implements it, and the
+important detail is that it does not simply post the payload: a queued command like `order.create`
+carries the order, but the rows it *produced* — payment rows, stock movements, the new inventory
+balance, the customer's updated totals — live in the state the domain function returned. So the
+adapter reads those out of local state and mirrors the real rows.
+
+Everything is an upsert keyed by the id the device minted offline, which is what makes a replayed
+queue harmless. `orders.client_id` is `unique`, so a duplicate sale collides at the database rather
+than being caught by application logic.
+
+### What is not done yet
+
+Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
+sells at the same stand, three things need to move server-side:
+
+- **Stock decrements** must be atomic. Two devices selling the last item offline will both succeed
+  locally and both sync. The right resolution is not to reject the second — the customer already
+  walked away with it — but to apply decrements in a transaction and flag a negative result the same
+  way the existing oversell override does.
+- **Invoice numbers** should come from the `invoice_seq` sequence rather than a client counter.
+- **`balanceAfter` on stock movements** is currently computed from the device's local view, so
+  interleaved writes from two devices will record misleading running balances.
+
+Auth still runs on-device; `pullEverything()` exists for a cold bootstrap but deliberately does not
+merge into a device that already holds unsynced sales.
 
 ## Offline behaviour
 
@@ -161,7 +207,11 @@ src/
     receipt.js     receipt encoding, QR, WhatsApp/SMS/email delivery
     idb.js         IndexedDB wrapper
     seed.js        demo dataset
+    supabase.js    optional Supabase client, loaded on demand
+    supabaseAdapter.js  outbox → Supabase, and the cold bootstrap pull
     *.test.js      rule tests and the acceptance run
+supabase/
+  schema.sql       tables, indexes, RLS policies, realtime
   components/      layout, icons, chart, shared UI
   pages/           login, POS, receipt, admin screens
 ```
