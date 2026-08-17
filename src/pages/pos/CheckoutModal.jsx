@@ -5,13 +5,13 @@
 
 import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
-import { computeTotals } from '../../lib/domain.js'
+import { computeTotals, validatePromo } from '../../lib/domain.js'
 import { money, uid } from '../../lib/format.js'
 import { Avatar, Field, Modal } from '../../components/ui.jsx'
 
 const STEPS = ['Customer', 'Discount', 'Payment']
 
-export default function CheckoutModal({ cart, onClose, onComplete }) {
+export default function CheckoutModal({ cart, oversellApproval, onClose, onComplete }) {
   const { state, user, sellLocationId, actions, online } = useApp()
   const currency = useCurrency()
 
@@ -19,28 +19,48 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
   const [customer, setCustomer] = useState(null)
   const [walkIn, setWalkIn] = useState(false)
   const [discount, setDiscount] = useState({ type: 'percentage', value: 0 })
+  const [promo, setPromo] = useState(null)
   const [method, setMethod] = useState(state.settings.paymentMethods[0] || 'Cash')
   const [tendered, setTendered] = useState('')
   const [reference, setReference] = useState('')
   const [partPayment, setPartPayment] = useState(false)
   const [paidNow, setPaidNow] = useState('')
+  const [paymentMode, setPaymentMode] = useState('single')
+  const [splitParts, setSplitParts] = useState(() => [
+    { id: uid('sp'), method: 'Cash', amount: '' },
+    { id: uid('sp'), method: 'Card', amount: '' },
+  ])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const maxDiscount = user.maxDiscountPercent ?? state.settings.maxDiscountPercent
-  const totals = useMemo(() => computeTotals(cart, discount, state.settings), [cart, discount, state.settings])
+  const totals = useMemo(
+    () => computeTotals(cart, discount, state.settings, promo),
+    [cart, discount, promo, state.settings],
+  )
 
   // Line discounts count towards the cap too, otherwise they would be a way
-  // around the order-level limit.
+  // around the order-level limit. A promo code does not: it was authorised by an
+  // admin when it was created, so it is not the salesperson's discretion.
   const grossSubtotal = money(totals.subtotal + totals.lineDiscounts)
-  const percentApplied = grossSubtotal ? (totals.totalDiscount / grossSubtotal) * 100 : 0
+  const staffDiscount = money(totals.discountAmount + totals.lineDiscounts)
+  const percentApplied = grossSubtotal ? (staffDiscount / grossSubtotal) * 100 : 0
   const overDiscountLimit = percentApplied > maxDiscount + 0.001
 
-  const paidNowValue = partPayment ? money(Number(paidNow) || 0) : totals.total
+  const splitAllocated = money(
+    splitParts.reduce((sum, part) => sum + (part.method ? Number(part.amount) || 0 : 0), 0),
+  )
+  const splitting = paymentMode === 'split'
+  const paidNowValue = splitting
+    ? money(Math.min(splitAllocated, totals.total))
+    : partPayment
+      ? money(Number(paidNow) || 0)
+      : totals.total
   const balanceDue = money(totals.total - paidNowValue)
-  const isPending = partPayment && balanceDue > 0
+  const isPending = balanceDue > 0
 
-  const changeDue = method === 'Cash' && tendered ? money(Number(tendered) - totals.total) : null
+  const changeDue =
+    !splitting && method === 'Cash' && tendered ? money(Number(tendered) - totals.total) : null
 
   const complete = () => {
     setError('')
@@ -55,9 +75,17 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
         salespersonName: user.name,
         items: cart,
         discount,
+        promo,
         paymentMethod: method,
         paymentReference: reference,
-        amountPaid: partPayment ? paidNowValue : null,
+        paymentParts: splitting
+          ? splitParts
+              .filter((part) => part.method && Number(part.amount) > 0)
+              .map((part) => ({ method: part.method, amount: money(Number(part.amount)) }))
+          : null,
+        amountPaid: !splitting && partPayment ? paidNowValue : null,
+        overrideOversell: Boolean(oversellApproval),
+        overrideBy: oversellApproval,
       })
       onComplete(order)
     } catch (err) {
@@ -67,8 +95,13 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
   }
 
   // The discount ceiling is enforced, not just flagged.
+  const paymentReady = splitting ? splitAllocated > 0 : Boolean(method)
   const canAdvance =
-    step === 0 ? Boolean(customer) || walkIn : step === 1 ? !overDiscountLimit : Boolean(method) && !overDiscountLimit
+    step === 0
+      ? Boolean(customer) || walkIn
+      : step === 1
+        ? !overDiscountLimit
+        : paymentReady && !overDiscountLimit
 
   return (
     <Modal
@@ -106,6 +139,12 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
     >
       <StepBar step={step} onJump={setStep} />
 
+      {oversellApproval && (
+        <div className="badge badge-warn" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          Stock limit overridden by {oversellApproval.name} — this sale will be flagged for review.
+        </div>
+      )}
+
       {error && (
         <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
           {error}
@@ -132,6 +171,8 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
         <DiscountStep
           discount={discount}
           setDiscount={setDiscount}
+          promo={promo}
+          setPromo={setPromo}
           totals={totals}
           maxDiscount={maxDiscount}
           percentApplied={percentApplied}
@@ -157,6 +198,11 @@ export default function CheckoutModal({ cart, onClose, onComplete }) {
           setPaidNow={setPaidNow}
           paidNowValue={paidNowValue}
           balanceDue={balanceDue}
+          paymentMode={paymentMode}
+          setPaymentMode={setPaymentMode}
+          splitParts={splitParts}
+          setSplitParts={setSplitParts}
+          splitAllocated={splitAllocated}
         />
       )}
     </Modal>
@@ -350,12 +396,31 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
 
 /* -------------------------------------------------------------- discount */
 
-function DiscountStep({ discount, setDiscount, totals, maxDiscount, percentApplied, overLimit }) {
+function DiscountStep({
+  discount,
+  setDiscount,
+  promo,
+  setPromo,
+  totals,
+  maxDiscount,
+  percentApplied,
+  overLimit,
+}) {
+  const { state, sellLocationId } = useApp()
   const currency = useCurrency()
   const quick = [0, 5, 10, 15, 20].filter((value) => value <= maxDiscount || value === 0)
 
   return (
     <div className="col">
+      <PromoField
+        promo={promo}
+        setPromo={setPromo}
+        // The code is checked against the ticket before any manual discount, so
+        // a minimum-spend rule means what the customer actually brought to the till.
+        subtotal={money(totals.subtotal + totals.lineDiscounts)}
+        state={state}
+        locationId={sellLocationId}
+      />
       <div className="seg" style={{ alignSelf: 'flex-start' }}>
         <button
           className={discount.type === 'percentage' ? 'active' : ''}
@@ -438,8 +503,16 @@ function DiscountStep({ discount, setDiscount, totals, maxDiscount, percentAppli
             −{currency(totals.discountAmount)}
           </span>
         </div>
+        {totals.promoAmount > 0 && (
+          <div className="total-line">
+            <span>Promo {totals.promoCode}</span>
+            <span className="mono" style={{ color: 'var(--good)' }}>
+              −{currency(totals.promoAmount)}
+            </span>
+          </div>
+        )}
         <div className="total-line small" style={{ color: 'var(--muted-2)' }}>
-          <span>Total discount</span>
+          <span>Counts against your limit</span>
           <span className="mono">
             {percentApplied.toFixed(1)}% of {currency(totals.subtotal + totals.lineDiscounts)}
           </span>
@@ -450,6 +523,72 @@ function DiscountStep({ discount, setDiscount, totals, maxDiscount, percentAppli
         </div>
       </div>
     </div>
+  )
+}
+
+/** Promo code entry. Validation lives in the domain so the rules are testable. */
+function PromoField({ promo, setPromo, subtotal, state, locationId }) {
+  const currency = useCurrency()
+  const [code, setCode] = useState('')
+  const [error, setError] = useState('')
+
+  const apply = () => {
+    const result = validatePromo(state, code, subtotal, { locationId })
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setError('')
+    setCode('')
+    setPromo(result.promo)
+  }
+
+  if (promo) {
+    return (
+      <div
+        className="card row-between"
+        style={{ background: 'var(--good-soft)', borderColor: 'transparent', padding: 12 }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div className="mono" style={{ fontWeight: 700 }}>
+            {promo.code}
+          </div>
+          <div className="small" style={{ color: 'var(--muted)' }}>
+            {promo.description ||
+              `${promo.type === 'percentage' ? `${promo.value}%` : currency(promo.value)} off`}
+          </div>
+        </div>
+        <button className="btn btn-sm" onClick={() => setPromo(null)}>
+          Remove
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <Field label="Promo code (optional)" hint="Codes are set by an admin and ignore your discount limit.">
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          className="input mono grow"
+          value={code}
+          autoCapitalize="characters"
+          onChange={(event) => {
+            setCode(event.target.value.toUpperCase())
+            setError('')
+          }}
+          onKeyDown={(event) => event.key === 'Enter' && code.trim() && apply()}
+          placeholder="STALL10"
+        />
+        <button className="btn" disabled={!code.trim()} onClick={apply}>
+          Apply
+        </button>
+      </div>
+      {error && (
+        <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>
+          {error}
+        </div>
+      )}
+    </Field>
   )
 }
 
@@ -472,8 +611,14 @@ function PaymentStep({
   setPaidNow,
   paidNowValue,
   balanceDue,
+  paymentMode,
+  setPaymentMode,
+  splitParts,
+  setSplitParts,
+  splitAllocated,
 }) {
   const currency = useCurrency()
+  const splitting = paymentMode === 'split'
   const suggestions = useMemo(() => {
     const total = totals.total
     const options = new Set([Math.ceil(total)])
@@ -483,28 +628,49 @@ function PaymentStep({
 
   return (
     <div className="col">
-      <div className="grid grid-2" style={{ gap: 10 }}>
-        {methods.map((entry) => (
-          <button
-            key={entry}
-            className={`btn btn-lg ${method === entry ? 'btn-primary' : ''}`}
-            onClick={() => setMethod(entry)}
-          >
-            {entry}
-          </button>
-        ))}
-      </div>
-
       <div className="seg" style={{ alignSelf: 'flex-start' }}>
-        <button className={!partPayment ? 'active' : ''} onClick={() => setPartPayment(false)}>
-          Pay in full
+        <button className={!splitting ? 'active' : ''} onClick={() => setPaymentMode('single')}>
+          One method
         </button>
-        <button className={partPayment ? 'active' : ''} onClick={() => setPartPayment(true)}>
-          Part payment
+        <button className={splitting ? 'active' : ''} onClick={() => setPaymentMode('split')}>
+          Split payment
         </button>
       </div>
 
-      {partPayment && (
+      {splitting ? (
+        <SplitPanel
+          methods={methods}
+          parts={splitParts}
+          setParts={setSplitParts}
+          total={totals.total}
+          allocated={splitAllocated}
+        />
+      ) : (
+        <div className="grid grid-2" style={{ gap: 10 }}>
+          {methods.map((entry) => (
+            <button
+              key={entry}
+              className={`btn btn-lg ${method === entry ? 'btn-primary' : ''}`}
+              onClick={() => setMethod(entry)}
+            >
+              {entry}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {!splitting && (
+        <div className="seg" style={{ alignSelf: 'flex-start' }}>
+          <button className={!partPayment ? 'active' : ''} onClick={() => setPartPayment(false)}>
+            Pay in full
+          </button>
+          <button className={partPayment ? 'active' : ''} onClick={() => setPartPayment(true)}>
+            Part payment
+          </button>
+        </div>
+      )}
+
+      {!splitting && partPayment && (
         <>
           <Field
             label="Amount received now"
@@ -553,7 +719,7 @@ function PaymentStep({
         </>
       )}
 
-      {method === 'Cash' && !partPayment && (
+      {!splitting && method === 'Cash' && !partPayment && (
         <>
           <Field label="Cash received">
             <input
@@ -591,7 +757,7 @@ function PaymentStep({
         </>
       )}
 
-      {(method === 'Bank Transfer' || method === 'Online Payment' || method === 'Other') && (
+      {!splitting && (method === 'Bank Transfer' || method === 'Online Payment' || method === 'Other') && (
         <Field label="Reference (optional)" hint="Transaction ID, terminal reference or note.">
           <input
             className="input"
@@ -617,6 +783,12 @@ function PaymentStep({
             <span className="mono">−{currency(totals.discountAmount)}</span>
           </div>
         )}
+        {totals.promoAmount > 0 && (
+          <div className="total-line">
+            <span>Promo {totals.promoCode}</span>
+            <span className="mono">−{currency(totals.promoAmount)}</span>
+          </div>
+        )}
         {totals.tax > 0 && (
           <div className="total-line">
             <span>VAT</span>
@@ -627,7 +799,16 @@ function PaymentStep({
           <span>To pay</span>
           <span className="mono">{currency(totals.total)}</span>
         </div>
-        {partPayment && (
+        {splitting &&
+          splitParts
+            .filter((part) => Number(part.amount) > 0)
+            .map((part) => (
+              <div key={part.id} className="total-line small" style={{ color: 'var(--muted)' }}>
+                <span>{part.method}</span>
+                <span className="mono">{currency(Number(part.amount))}</span>
+              </div>
+            ))}
+        {balanceDue > 0 && (
           <>
             <div className="total-line" style={{ marginTop: 8 }}>
               <span>Receiving now</span>
@@ -638,6 +819,113 @@ function PaymentStep({
               <span className="mono">{currency(balanceDue)}</span>
             </div>
           </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Split payment rows. The customer pays part on one method and part on another;
+ * each row becomes its own payment record so every till reconciles on its own.
+ */
+function SplitPanel({ methods, parts, setParts, total, allocated }) {
+  const currency = useCurrency()
+  const remaining = money(total - allocated)
+
+  const patch = (id, values) =>
+    setParts((current) => current.map((part) => (part.id === id ? { ...part, ...values } : part)))
+
+  const addRow = () =>
+    setParts((current) => [
+      ...current,
+      { id: uid('sp'), method: methods.find((m) => !current.some((p) => p.method === m)) || methods[0], amount: '' },
+    ])
+
+  return (
+    <div className="col">
+      <div className="stack-sm">
+        {parts.map((part, index) => (
+          <div key={part.id} className="row" style={{ gap: 8, alignItems: 'flex-end' }}>
+            <Field label={index === 0 ? 'Method' : ''}>
+              <select
+                className="select"
+                style={{ width: 150 }}
+                value={part.method}
+                onChange={(event) => patch(part.id, { method: event.target.value })}
+              >
+                {methods.map((entry) => (
+                  <option key={entry} value={entry}>
+                    {entry}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label={index === 0 ? 'Amount' : ''}>
+              <input
+                className="input mono"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                value={part.amount}
+                onChange={(event) => patch(part.id, { amount: event.target.value })}
+                placeholder="0.00"
+              />
+            </Field>
+            <button
+              className="btn"
+              title="Put the rest on this method"
+              onClick={() =>
+                patch(part.id, {
+                  amount: String(money(Math.max(0, remaining + (Number(part.amount) || 0)))),
+                })
+              }
+            >
+              Rest
+            </button>
+            {parts.length > 2 && (
+              <button
+                className="btn btn-ghost"
+                aria-label="Remove"
+                onClick={() => setParts((current) => current.filter((entry) => entry.id !== part.id))}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {parts.length < methods.length && (
+        <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={addRow}>
+          + Another method
+        </button>
+      )}
+
+      <div
+        className="card"
+        style={{
+          background: remaining === 0 ? 'var(--good-soft)' : 'var(--warn-soft)',
+          borderColor: 'transparent',
+        }}
+      >
+        <div className="row-between">
+          <span style={{ fontWeight: 620 }}>
+            {remaining === 0 ? 'Fully allocated' : remaining > 0 ? 'Left to allocate' : 'Over-allocated'}
+          </span>
+          <span className="mono" style={{ fontSize: 20, fontWeight: 750 }}>
+            {currency(Math.abs(remaining))}
+          </span>
+        </div>
+        {remaining > 0 && (
+          <div className="small" style={{ marginTop: 4 }}>
+            Complete the sale like this and the rest is held as a balance due.
+          </div>
+        )}
+        {remaining < 0 && (
+          <div className="small" style={{ marginTop: 4 }}>
+            Only {currency(total)} will be recorded — the excess is change.
+          </div>
         )}
       </div>
     </div>

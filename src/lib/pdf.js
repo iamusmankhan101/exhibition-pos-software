@@ -197,6 +197,7 @@ export async function buildInvoicePdf(data, qrDataUrl) {
 
   line('Subtotal', currency(data.subtotal))
   if (data.discountAmount > 0) line('Discount', `-${currency(data.discountAmount)}`)
+  if (data.promoAmount > 0) line(`Promo ${data.promoCode || ''}`.trim(), `-${currency(data.promoAmount)}`)
   if (design.showTaxBreakdown !== false && data.tax > 0) {
     line(`VAT ${data.taxRate}%${data.taxInclusive ? ' (incl.)' : ''}`, currency(data.tax))
   }
@@ -208,6 +209,11 @@ export async function buildInvoicePdf(data, qrDataUrl) {
   doc.setLineWidth(0.2)
   y += 2
   line('TOTAL', currency(data.total), true)
+
+  // A split sale itemises each method, so the invoice reconciles against both.
+  for (const part of data.paymentParts || []) {
+    line(part.method, currency(part.amount))
+  }
 
   if (data.amountPaid !== undefined && data.balanceDue > 0) {
     line('Paid', currency(data.amountPaid))

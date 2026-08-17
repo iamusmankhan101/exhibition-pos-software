@@ -16,6 +16,7 @@ import {
   deleteOrders,
   deleteProducts,
   getStock,
+  orderPaymentParts,
   refundOrder,
   settlePayment,
   transferStock,
@@ -73,6 +74,8 @@ function migrate(state) {
     notifications: state.notifications || [],
     outbox: state.outbox || [],
     auditLogs: state.auditLogs || [],
+    promoCodes: state.promoCodes || [],
+    returns: state.returns || [],
     counters: state.counters || { invoice: 1 },
   }
 }
@@ -815,10 +818,35 @@ export function AppProvider({ children }) {
               )
             }
 
+            // Selling past the shelf count is a decision someone made, so it is
+            // named in the log and raised to the owner rather than passing quietly.
+            if (result.order.oversell) {
+              const lines = result.order.oversell.lines
+                .map((line) => `${line.name} (${line.requested} of ${line.available})`)
+                .join(', ')
+              next = withNotification(
+                next,
+                'stock',
+                'Sold past available stock',
+                `${result.order.invoiceNo} — ${lines}. Authorised by ${
+                  result.order.oversell.by || 'an override'
+                }.`,
+                'danger',
+              )
+              next = withAudit(
+                next,
+                'Overrode stock limit',
+                `${result.order.invoiceNo} · ${lines}`,
+                'order',
+                result.order.id,
+              )
+            }
+
+            const promoDetail = result.order.promoCode ? ` · promo ${result.order.promoCode}` : ''
             next = withAudit(
               next,
               'Completed sale',
-              `${result.order.invoiceNo} · ${result.order.total} · ${result.order.paymentMethod}`,
+              `${result.order.invoiceNo} · ${result.order.total} · ${result.order.paymentMethod}${promoDetail}`,
               'order',
               result.order.id,
             )
@@ -852,26 +880,67 @@ export function AppProvider({ children }) {
               })
             }
           }
+          const reversed = money((order.amountPaid ?? order.total) - (order.refundedAmount || 0))
+          const returnedUnits = order.items.reduce(
+            (sum, item) => sum + (item.quantity - (item.returnedQuantity || 0)),
+            0,
+          )
+
           next = {
             ...next,
             orders: next.orders.map((entry) =>
               entry.id === orderId ? { ...entry, status: 'Cancelled', note: reason } : entry,
             ),
-            // Reverse only money that was actually taken, not the invoice total.
+            // Reverse only money that was actually taken, not the invoice total,
+            // and give each method back what it took on a split sale.
             payments: [
-              {
+              ...orderPaymentParts(order).map((part) => ({
                 id: uid('ref'),
                 orderId,
                 invoiceNo: order.invoiceNo,
-                method: order.paymentMethod,
-                amount: -money((order.amountPaid ?? order.total) - (order.refundedAmount || 0)),
+                method: part.method,
+                amount: -money(
+                  reversed * (order.amountPaid ? part.amount / order.amountPaid : 1),
+                ),
                 status: 'Cancelled',
                 reference: reason || '',
                 kind: 'refund',
                 exhibitionId: order.exhibitionId,
                 createdAt: nowIso(),
-              },
+              })),
               ...next.payments,
+            ],
+            // Cancellations belong in the same ledger as returns — both are ways
+            // a completed sale gets reversed, and the report covers both.
+            returns: [
+              {
+                id: uid('ret'),
+                kind: 'cancellation',
+                orderId,
+                invoiceNo: order.invoiceNo,
+                exhibitionId: order.exhibitionId,
+                customerId: order.customerId || null,
+                customerName: order.customerName,
+                salespersonName: order.salespersonName,
+                lines: order.items
+                  .filter((item) => item.quantity - (item.returnedQuantity || 0) > 0)
+                  .map((item) => ({
+                    variantId: item.variantId,
+                    name: item.name,
+                    sku: item.sku,
+                    category: item.category || '',
+                    quantity: item.quantity - (item.returnedQuantity || 0),
+                  })),
+                quantity: returnedUnits,
+                refundAmount: reversed,
+                balanceCleared: money(order.balanceDue || 0),
+                method: order.paymentMethod,
+                reason: reason || '',
+                userId: user?.id || '',
+                userName: user?.name || '',
+                createdAt: nowIso(),
+              },
+              ...(next.returns || []),
             ],
           }
           next = withNotification(next, 'refund', 'Sale cancelled', `${order.invoiceNo} — ${reason}`, 'warn')
@@ -1032,6 +1101,75 @@ export function AppProvider({ children }) {
         })
         if (error) throw error
         toast('Role deleted', 'warn')
+      },
+
+      /* promo codes */
+      savePromoCode(promo) {
+        let error = null
+        const code = String(promo.code || '').trim().toUpperCase()
+        setState((current) => {
+          if (!code) {
+            error = new Error('Give the code a name, for example STALL10.')
+            return current
+          }
+          if (!(Number(promo.value) > 0)) {
+            error = new Error('A promo code has to take something off.')
+            return current
+          }
+          if (promo.type === 'percentage' && Number(promo.value) > 100) {
+            error = new Error('A percentage code cannot be more than 100%.')
+            return current
+          }
+          const clash = current.promoCodes.some(
+            (entry) => entry.id !== promo.id && String(entry.code).toUpperCase() === code,
+          )
+          if (clash) {
+            error = new Error(`${code} is already in use.`)
+            return current
+          }
+
+          const exists = current.promoCodes.some((entry) => entry.id === promo.id)
+          const record = {
+            ...promo,
+            code,
+            value: Number(promo.value) || 0,
+            minSpend: Number(promo.minSpend) || 0,
+            usageLimit: Number(promo.usageLimit) || 0,
+            usedCount: promo.usedCount || 0,
+          }
+          const promoCodes = exists
+            ? current.promoCodes.map((entry) => (entry.id === promo.id ? record : entry))
+            : [{ ...record, createdAt: nowIso() }, ...current.promoCodes]
+
+          const draft = withAudit(
+            { ...current, promoCodes },
+            exists ? 'Updated promo code' : 'Created promo code',
+            `${code} · ${record.type === 'percentage' ? `${record.value}%` : record.value} off${
+              record.active ? '' : ' · inactive'
+            }`,
+            'promo',
+            promo.id,
+          )
+          return withOutbox(draft, 'promo.save', promo.id, record)
+        })
+        if (error) throw error
+        toast(`Promo code ${code} saved`, 'success')
+      },
+
+      deletePromoCode(promoId) {
+        setState((current) => {
+          const promo = current.promoCodes.find((entry) => entry.id === promoId)
+          if (!promo) return current
+          const draft = withAudit(
+            { ...current, promoCodes: current.promoCodes.filter((entry) => entry.id !== promoId) },
+            'Deleted promo code',
+            `${promo.code}${promo.usedCount ? ` · used ${promo.usedCount} time(s)` : ''}`,
+            'promo',
+            promoId,
+          )
+          return withOutbox(draft, 'promo.delete', uid('del'), { promoId })
+        })
+        toast('Promo code deleted', 'warn')
       },
 
       /* settings */

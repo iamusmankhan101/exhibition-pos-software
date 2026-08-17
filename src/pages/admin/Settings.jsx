@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
-import { useApp } from '../../lib/store.jsx'
-import { Avatar, Confirm, Field, ImagePicker, Modal, Tabs } from '../../components/ui.jsx'
+import { useApp, useCurrency } from '../../lib/store.jsx'
+import { Avatar, Confirm, EmptyState, Field, ImagePicker, Modal, Tabs } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import { uid } from '../../lib/format.js'
 import { ALL_PERMISSIONS, PERMISSION_GROUPS } from '../../lib/permissions.js'
@@ -15,7 +15,7 @@ const CURRENCIES = [
 ]
 
 export default function Settings() {
-  const { state, actions, deviceCode, deviceId } = useApp()
+  const { state, actions, deviceCode, deviceId, can } = useApp()
   const [tab, setTab] = useState('business')
   const [draft, setDraft] = useState(state.settings)
   const [resetting, setResetting] = useState(false)
@@ -79,6 +79,7 @@ export default function Settings() {
           { value: 'receipts', label: 'Receipts' },
           { value: 'invoice', label: 'Invoice design' },
           { value: 'roles', label: 'Roles & access' },
+          ...(can('promo.manage') ? [{ value: 'promos', label: 'Promo codes' }] : []),
           { value: 'data', label: 'Data & devices' },
         ]}
       />
@@ -405,6 +406,8 @@ export default function Settings() {
 
       {tab === 'roles' && <RolesPanel draft={draft} patch={patch} />}
 
+      {tab === 'promos' && can('promo.manage') && <PromoPanel />}
+
       {tab === 'data' && (
         <div className="grid grid-2">
           <div className="card col">
@@ -473,6 +476,300 @@ export default function Settings() {
 }
 
 /* ---------------------------------------------------------------- roles */
+
+/* ----------------------------------------------------------- promo codes */
+
+/**
+ * Promo codes are the admin's own discount, separate from what a salesperson
+ * may give away: a code that reaches the till has already been authorised, so
+ * it does not eat into anyone's discount ceiling.
+ */
+function PromoPanel() {
+  const { state, actions } = useApp()
+  const currency = useCurrency()
+  const [editing, setEditing] = useState(null)
+  const [deleting, setDeleting] = useState(null)
+
+  const codes = state.promoCodes || []
+  const today = new Date().toISOString().slice(0, 10)
+
+  const newCode = () => ({
+    id: uid('pmo'),
+    code: '',
+    description: '',
+    type: 'percentage',
+    value: 10,
+    minSpend: 0,
+    usageLimit: 0,
+    usedCount: 0,
+    startsAt: '',
+    expiresAt: '',
+    exhibitionId: 'all',
+    active: true,
+  })
+
+  /** Why a code would be refused at the till right now. */
+  const statusOf = (promo) => {
+    if (!promo.active) return { label: 'Inactive', tone: 'var(--muted-2)' }
+    if (promo.startsAt && today < promo.startsAt) return { label: 'Scheduled', tone: 'var(--warn)' }
+    if (promo.expiresAt && today > promo.expiresAt) return { label: 'Expired', tone: 'var(--danger)' }
+    if (promo.usageLimit > 0 && (promo.usedCount || 0) >= promo.usageLimit) {
+      return { label: 'Used up', tone: 'var(--danger)' }
+    }
+    return { label: 'Live', tone: 'var(--brand)' }
+  }
+
+  return (
+    <div className="col">
+      <div className="card col">
+        <div className="row-between">
+          <div>
+            <div className="card-title">Promo codes</div>
+            <div className="card-sub">
+              Typed in at checkout. A code discounts the order on top of anything the salesperson
+              gave, and does not count against their limit.
+            </div>
+          </div>
+          <button className="btn btn-sm btn-primary" onClick={() => setEditing(newCode())}>
+            <Icon name="plus" size={14} />
+            New code
+          </button>
+        </div>
+
+        {codes.length === 0 ? (
+          <EmptyState title="No promo codes yet">
+            Create one and staff can apply it at the discount step of checkout.
+          </EmptyState>
+        ) : (
+          <div className="stack-sm">
+            {codes.map((promo) => {
+              const status = statusOf(promo)
+              const scope =
+                promo.exhibitionId && promo.exhibitionId !== 'all'
+                  ? state.exhibitions.find((entry) => entry.id === promo.exhibitionId)?.name
+                  : null
+              return (
+                <button
+                  key={promo.id}
+                  className="list-item"
+                  onClick={() => setEditing(structuredClone(promo))}
+                >
+                  <div className="grow">
+                    <div className="row" style={{ gap: 7 }}>
+                      <span className="mono" style={{ fontWeight: 700 }}>
+                        {promo.code}
+                      </span>
+                      <span className="status-cell" style={{ color: status.tone }}>
+                        <span className="dot" />
+                        <span style={{ color: 'var(--text)' }}>{status.label}</span>
+                      </span>
+                    </div>
+                    <div className="small muted">{promo.description || 'No description'}</div>
+                    <div className="small muted" style={{ marginTop: 3 }}>
+                      {promo.type === 'percentage' ? `${promo.value}% off` : `${currency(promo.value)} off`}
+                      {promo.minSpend > 0 && ` · min spend ${currency(promo.minSpend)}`}
+                      {promo.usageLimit > 0
+                        ? ` · used ${promo.usedCount || 0} of ${promo.usageLimit}`
+                        : ` · used ${promo.usedCount || 0} time${(promo.usedCount || 0) === 1 ? '' : 's'}`}
+                      {promo.expiresAt && ` · ends ${promo.expiresAt}`}
+                      {scope && ` · ${scope} only`}
+                    </div>
+                  </div>
+                  <Icon name="chevronRight" size={16} />
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {editing && (
+        <PromoEditor
+          promo={editing}
+          onClose={() => setEditing(null)}
+          onDelete={() => {
+            setDeleting(editing)
+            setEditing(null)
+          }}
+        />
+      )}
+
+      <Confirm
+        open={Boolean(deleting)}
+        title={`Delete ${deleting?.code}?`}
+        message={
+          deleting?.usedCount
+            ? `${deleting.code} has been used ${deleting.usedCount} time(s). Past sales keep their discount, but the code disappears from reporting.`
+            : 'The code stops working immediately.'
+        }
+        confirmLabel="Delete code"
+        danger
+        onConfirm={() => actions.deletePromoCode(deleting.id)}
+        onClose={() => setDeleting(null)}
+      />
+    </div>
+  )
+}
+
+function PromoEditor({ promo, onClose, onDelete }) {
+  const { state, actions } = useApp()
+  const [entry, setEntry] = useState(promo)
+  const [error, setError] = useState('')
+
+  const isNew = !(state.promoCodes || []).some((existing) => existing.id === promo.id)
+  const set = (fields) => setEntry((current) => ({ ...current, ...fields }))
+
+  const save = () => {
+    try {
+      actions.savePromoCode(entry)
+      onClose()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={isNew ? 'New promo code' : entry.code}
+      subtitle={
+        isNew ? 'Staff type this in at the discount step' : `Used ${entry.usedCount || 0} time(s) so far`
+      }
+      footer={
+        <>
+          {!isNew && (
+            <button className="btn btn-danger" onClick={onDelete}>
+              <Icon name="trash" size={15} />
+              Delete
+            </button>
+          )}
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={save}>
+            Save code
+          </button>
+        </>
+      }
+    >
+      {error && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {error}
+        </div>
+      )}
+
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <Field label="Code" hint="Case does not matter — it is stored in capitals.">
+          <input
+            className="input mono"
+            value={entry.code}
+            autoCapitalize="characters"
+            placeholder="STALL10"
+            onChange={(event) => set({ code: event.target.value.toUpperCase() })}
+          />
+        </Field>
+        <Field label="Description">
+          <input
+            className="input"
+            value={entry.description}
+            placeholder="What this code is for"
+            onChange={(event) => set({ description: event.target.value })}
+          />
+        </Field>
+      </div>
+
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <Field label="Discount type">
+          <div className="seg">
+            <button
+              className={entry.type === 'percentage' ? 'active' : ''}
+              onClick={() => set({ type: 'percentage' })}
+            >
+              Percentage
+            </button>
+            <button className={entry.type === 'fixed' ? 'active' : ''} onClick={() => set({ type: 'fixed' })}>
+              Fixed amount
+            </button>
+          </div>
+        </Field>
+        <Field label={entry.type === 'percentage' ? 'Percent off' : 'Amount off'}>
+          <input
+            className="input"
+            type="number"
+            min="0"
+            step={entry.type === 'percentage' ? '1' : '0.01'}
+            value={entry.value}
+            onChange={(event) => set({ value: event.target.value })}
+          />
+        </Field>
+      </div>
+
+      <div className="grid grid-2" style={{ gap: 10 }}>
+        <Field label="Minimum spend" hint="0 for no minimum. Measured before any discount.">
+          <input
+            className="input"
+            type="number"
+            min="0"
+            step="0.01"
+            value={entry.minSpend}
+            onChange={(event) => set({ minSpend: event.target.value })}
+          />
+        </Field>
+        <Field label="Usage limit" hint="0 for unlimited.">
+          <input
+            className="input"
+            type="number"
+            min="0"
+            value={entry.usageLimit}
+            onChange={(event) => set({ usageLimit: event.target.value })}
+          />
+        </Field>
+        <Field label="Valid from" hint="Leave blank to start straight away.">
+          <input
+            className="input"
+            type="date"
+            value={entry.startsAt || ''}
+            onChange={(event) => set({ startsAt: event.target.value })}
+          />
+        </Field>
+        <Field label="Expires after" hint="Leave blank for no end date.">
+          <input
+            className="input"
+            type="date"
+            value={entry.expiresAt || ''}
+            onChange={(event) => set({ expiresAt: event.target.value })}
+          />
+        </Field>
+      </div>
+
+      <Field label="Where it works">
+        <select
+          className="select"
+          value={entry.exhibitionId || 'all'}
+          onChange={(event) => set({ exhibitionId: event.target.value })}
+        >
+          <option value="all">Everywhere, including direct sales</option>
+          {state.exhibitions.map((exhibition) => (
+            <option key={exhibition.id} value={exhibition.id}>
+              {exhibition.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <label className="checkbox">
+        <input type="checkbox" checked={entry.active !== false} onChange={(event) => set({ active: event.target.checked })} />
+        <span>
+          Active
+          <div className="small muted">
+            Turn off to retire a code without losing it from past sales and reports.
+          </div>
+        </span>
+      </label>
+    </Modal>
+  )
+}
 
 function RolesPanel({ draft, patch }) {
   const { state, actions, user } = useApp()

@@ -2,11 +2,17 @@ import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { EmptyState, StatCard, Tabs } from '../../components/ui.jsx'
 import { formatDate } from '../../lib/format.js'
+import { orderPaymentParts } from '../../lib/domain.js'
 import {
   customerSummary,
+  discountReport,
   filterOrders,
   inventoryReport,
   paymentBreakdown,
+  productSales,
+  returnsReport,
+  returnsSummary,
+  salesByCategory,
   salesByDay,
   salesSummary,
   staffPerformance,
@@ -15,8 +21,12 @@ import { exportCsv, exportExcel, exportPdf } from '../../lib/csv.js'
 
 const TABS = [
   { value: 'sales', label: 'Sales' },
+  { value: 'products', label: 'Products' },
+  { value: 'categories', label: 'Categories' },
   { value: 'inventory', label: 'Inventory' },
   { value: 'payments', label: 'Payments' },
+  { value: 'discounts', label: 'Discounts' },
+  { value: 'returns', label: 'Returns' },
   { value: 'staff', label: 'Staff' },
   { value: 'customers', label: 'Customers' },
 ]
@@ -59,13 +69,99 @@ export default function Reports() {
               value: (row) => row.items.map((item) => `${item.name} ×${item.quantity}`).join('; '),
             },
             { label: 'Salesperson', value: (row) => row.salespersonName },
-            { label: 'Payment', value: (row) => row.paymentMethod },
-            { label: 'Discount', value: (row) => row.discountAmount.toFixed(2) },
-            { label: 'Total', value: (row) => row.total.toFixed(2) },
+            {
+              label: 'Payment',
+              value: (row) =>
+                orderPaymentParts(row)
+                  .map((part) => `${part.method} ${part.amount.toFixed(2)}`)
+                  .join(' + ') || row.paymentMethod,
+            },
+            { label: 'Promo', value: (row) => row.promoCode || '' },
+            {
+              label: 'Discount',
+              numeric: true,
+              value: (row) =>
+                (row.discountAmount + (row.promoAmount || 0) + (row.lineDiscounts || 0)).toFixed(2),
+            },
+            { label: 'Total', numeric: true, value: (row) => row.total.toFixed(2) },
             { label: 'Status', value: (row) => row.status },
           ],
           key: (row) => row.id,
         }
+      case 'products':
+        return {
+          title: 'Product sales report',
+          rows: productSales(state, filter),
+          columns: [
+            { label: 'Product', value: (row) => row.name },
+            { label: 'Variant', value: (row) => row.variant },
+            { label: 'SKU', value: (row) => row.sku },
+            { label: 'Category', value: (row) => row.category },
+            { label: 'Units sold', numeric: true, value: (row) => row.quantity },
+            { label: 'Returned', numeric: true, value: (row) => row.returned },
+            { label: 'Item discounts', numeric: true, value: (row) => row.discounts.toFixed(2) },
+            { label: 'Revenue', numeric: true, value: (row) => row.revenue.toFixed(2) },
+          ],
+          key: (row) => row.key,
+        }
+      case 'categories':
+        return {
+          title: 'Category sales report',
+          rows: salesByCategory(state, filter),
+          columns: [
+            { label: 'Category', value: (row) => row.category },
+            { label: 'Variants sold', numeric: true, value: (row) => row.lines },
+            { label: 'Units sold', numeric: true, value: (row) => row.quantity },
+            { label: 'Returned', numeric: true, value: (row) => row.returned },
+            { label: 'Revenue', numeric: true, value: (row) => row.revenue.toFixed(2) },
+          ],
+          key: (row) => row.key,
+        }
+      case 'discounts':
+        return {
+          title: 'Discount report',
+          rows: discountReport(state, filter),
+          columns: [
+            { label: 'Date', value: (row) => formatDate(row.createdAt, true) },
+            { label: 'Invoice', value: (row) => row.invoiceNo },
+            { label: 'Customer', value: (row) => row.customerName },
+            { label: 'Salesperson', value: (row) => row.salespersonName },
+            { label: 'Ticket', numeric: true, value: (row) => row.ticket.toFixed(2) },
+            { label: 'Item discounts', numeric: true, value: (row) => row.lineDiscounts.toFixed(2) },
+            { label: 'Order discount', numeric: true, value: (row) => row.orderDiscount.toFixed(2) },
+            { label: 'Promo', value: (row) => (row.promoCode ? `${row.promoCode} ${row.promoAmount.toFixed(2)}` : '') },
+            { label: 'Total given', numeric: true, value: (row) => row.total.toFixed(2) },
+            { label: 'Share', numeric: true, value: (row) => `${row.percent.toFixed(1)}%` },
+          ],
+          key: (row) => row.key,
+        }
+      case 'returns': {
+        const rows = returnsReport(state, filter)
+        const stats = returnsSummary(rows)
+        return {
+          title: 'Returns and refunds report',
+          rows,
+          cards: [
+            { label: 'Returns', value: stats.count, meta: `${stats.cancellations} full cancellation(s)` },
+            { label: 'Units back', value: stats.units },
+            { label: 'Refunded', value: currency(stats.refunded) },
+            { label: 'Balance written off', value: currency(stats.writtenOff) },
+          ],
+          columns: [
+            { label: 'Date', value: (row) => formatDate(row.createdAt, true) },
+            { label: 'Invoice', value: (row) => row.invoiceNo },
+            { label: 'Type', value: (row) => (row.kind === 'cancellation' ? 'Cancellation' : 'Return') },
+            { label: 'Customer', value: (row) => row.customerName },
+            { label: 'Items', value: (row) => row.itemSummary },
+            { label: 'Units', numeric: true, value: (row) => row.quantity },
+            { label: 'Refunded', numeric: true, value: (row) => (row.refundAmount || 0).toFixed(2) },
+            { label: 'Method', value: (row) => row.method },
+            { label: 'Reason', value: (row) => row.reason },
+            { label: 'Authorised by', value: (row) => row.userName },
+          ],
+          key: (row) => row.key,
+        }
+      }
       case 'inventory': {
         const rows = exhibitionId === 'all' ? [] : inventoryReport(state, exhibitionId)
         return {
@@ -75,12 +171,12 @@ export default function Reports() {
             { label: 'Product', value: (row) => row.product.name },
             { label: 'Variant', value: (row) => [row.variant.color, row.variant.size].filter(Boolean).join(' · ') },
             { label: 'SKU', value: (row) => row.variant.sku },
-            { label: 'Opening', value: (row) => row.opening },
-            { label: 'Sold', value: (row) => row.sold },
-            { label: 'Returned', value: (row) => row.returned },
-            { label: 'Closing', value: (row) => row.closing },
-            { label: 'Revenue', value: (row) => row.revenue.toFixed(2) },
-            ...(can('view.cost') ? [{ label: 'Cost of goods', value: (row) => row.cost.toFixed(2) }] : []),
+            { label: 'Opening', numeric: true, value: (row) => row.opening },
+            { label: 'Sold', numeric: true, value: (row) => row.sold },
+            { label: 'Returned', numeric: true, value: (row) => row.returned },
+            { label: 'Closing', numeric: true, value: (row) => row.closing },
+            { label: 'Revenue', numeric: true, value: (row) => row.revenue.toFixed(2) },
+            ...(can('view.cost') ? [{ label: 'Cost of goods', numeric: true, value: (row) => row.cost.toFixed(2) }] : []),
           ],
           key: (row) => row.key,
           note: exhibitionId === 'all' ? 'Choose a single exhibition to see its stock movement.' : '',
@@ -92,9 +188,9 @@ export default function Reports() {
           rows: paymentBreakdown(state, filter),
           columns: [
             { label: 'Method', value: (row) => row.method },
-            { label: 'Transactions', value: (row) => row.count },
-            { label: 'Refunded', value: (row) => row.refunded.toFixed(2) },
-            { label: 'Net amount', value: (row) => row.amount.toFixed(2) },
+            { label: 'Transactions', numeric: true, value: (row) => row.count },
+            { label: 'Refunded', numeric: true, value: (row) => row.refunded.toFixed(2) },
+            { label: 'Net amount', numeric: true, value: (row) => row.amount.toFixed(2) },
           ],
           key: (row) => row.method,
         }
@@ -104,11 +200,11 @@ export default function Reports() {
           rows: staffPerformance(state, filter),
           columns: [
             { label: 'Salesperson', value: (row) => row.name },
-            { label: 'Sales', value: (row) => row.sales.toFixed(2) },
-            { label: 'Transactions', value: (row) => row.transactions },
-            { label: 'Items sold', value: (row) => row.items },
-            { label: 'Average order', value: (row) => row.averageOrder.toFixed(2) },
-            { label: 'Discounts given', value: (row) => row.discounts.toFixed(2) },
+            { label: 'Sales', numeric: true, value: (row) => row.sales.toFixed(2) },
+            { label: 'Transactions', numeric: true, value: (row) => row.transactions },
+            { label: 'Items sold', numeric: true, value: (row) => row.items },
+            { label: 'Average order', numeric: true, value: (row) => row.averageOrder.toFixed(2) },
+            { label: 'Discounts given', numeric: true, value: (row) => row.discounts.toFixed(2) },
           ],
           key: (row) => row.id,
         }
@@ -120,20 +216,29 @@ export default function Reports() {
         return {
           title: 'Customer report',
           rows: buyers,
-          summaryCards: stats,
+          cards: [
+            { label: 'New customers', value: stats.newCustomers },
+            { label: 'Returning', value: stats.returning },
+            { label: 'Walk-in sales', value: stats.walkIns },
+            {
+              label: 'Marketing consent',
+              value: stats.marketingConsented,
+              meta: `${stats.consentRate}% of database`,
+            },
+          ],
           columns: [
             { label: 'Customer', value: (row) => row.name },
             { label: 'WhatsApp', value: (row) => row.whatsapp },
             { label: 'Email', value: (row) => row.email },
-            { label: 'Orders', value: (row) => row.totalOrders || 0 },
-            { label: 'Total spend', value: (row) => (row.totalSpend || 0).toFixed(2) },
+            { label: 'Orders', numeric: true, value: (row) => row.totalOrders || 0 },
+            { label: 'Total spend', numeric: true, value: (row) => (row.totalSpend || 0).toFixed(2) },
             { label: 'Marketing consent', value: (row) => (row.marketingConsent ? 'Yes' : 'No') },
           ],
           key: (row) => row.id,
         }
       }
     }
-  }, [tab, orders, state, filter, exhibitionId, can])
+  }, [tab, orders, state, filter, exhibitionId, can, currency])
 
   const daily = useMemo(() => salesByDay(state, filter), [state, filter])
   const dailyMax = Math.max(1, ...daily.map((row) => row.total))
@@ -173,7 +278,11 @@ export default function Reports() {
       <div className="grid grid-4">
         <StatCard label="Net sales" value={currency(summary.net)} meta={period} accent />
         <StatCard label="Gross sales" value={currency(summary.gross)} />
-        <StatCard label="Discounts" value={currency(summary.discounts)} />
+        <StatCard
+          label="Discounts"
+          value={currency(summary.discounts)}
+          meta={summary.promoDiscounts > 0 ? `${currency(summary.promoDiscounts)} on promo codes` : undefined}
+        />
         <StatCard label="VAT collected" value={currency(summary.tax)} />
       </div>
 
@@ -207,16 +316,11 @@ export default function Reports() {
 
       <Tabs tabs={TABS} value={tab} onChange={setTab} />
 
-      {report.summaryCards && (
+      {report.cards && (
         <div className="grid grid-4">
-          <StatCard label="New customers" value={report.summaryCards.newCustomers} />
-          <StatCard label="Returning" value={report.summaryCards.returning} />
-          <StatCard label="Walk-in sales" value={report.summaryCards.walkIns} />
-          <StatCard
-            label="Marketing consent"
-            value={report.summaryCards.marketingConsented}
-            meta={`${report.summaryCards.consentRate}% of database`}
-          />
+          {report.cards.map((card) => (
+            <StatCard key={card.label} label={card.label} value={card.value} meta={card.meta} />
+          ))}
         </div>
       )}
 
@@ -230,7 +334,7 @@ export default function Reports() {
             <thead>
               <tr>
                 {report.columns.map((column) => (
-                  <th key={column.label} className={column.label.match(/total|sales|spend|amount|revenue|cost|discount|opening|sold|returned|closing|orders|transactions|items/i) ? 'right' : ''}>
+                  <th key={column.label} className={column.numeric ? 'right' : ''}>
                     {column.label}
                   </th>
                 ))}
@@ -240,14 +344,7 @@ export default function Reports() {
               {report.rows.map((row) => (
                 <tr key={report.key(row)}>
                   {report.columns.map((column) => (
-                    <td
-                      key={column.label}
-                      className={
-                        column.label.match(/total|sales|spend|amount|revenue|cost|discount|opening|sold|returned|closing|orders|transactions|items/i)
-                          ? 'right mono'
-                          : ''
-                      }
-                    >
+                    <td key={column.label} className={column.numeric ? 'right mono' : ''}>
                       {String(column.value(row) ?? '')}
                     </td>
                   ))}

@@ -49,6 +49,12 @@ export function encodeReceipt(order, settings, exhibitionName, customer) {
     it: order.items.map((item) => [item.name, `${item.color || ''}${item.size ? ` / ${item.size}` : ''}`, item.quantity, item.unitPrice]),
     sub: order.subtotal,
     dis: order.discountAmount,
+    // Promo and split-payment fields are omitted when they do not apply — the
+    // whole payload has to fit in a URL fragment.
+    ...(order.promoAmount > 0 ? { pc: order.promoCode, pa: order.promoAmount } : {}),
+    ...(order.paymentParts?.length > 1
+      ? { pp: order.paymentParts.map((part) => [part.method, part.amount]) }
+      : {}),
     tax: order.tax,
     ti: settings.taxInclusive,
     tr: settings.taxRate,
@@ -92,6 +98,9 @@ export function decodeReceipt(encoded) {
       })),
       subtotal: data.sub,
       discountAmount: data.dis,
+      promoCode: data.pc || '',
+      promoAmount: data.pa || 0,
+      paymentParts: (data.pp || []).map(([method, amount]) => ({ method, amount })),
       tax: data.tax,
       taxInclusive: data.ti,
       taxRate: data.tr,

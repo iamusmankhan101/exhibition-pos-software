@@ -128,12 +128,78 @@ export function findByCode(state, code) {
   return null
 }
 
+/** Category of a sold line, resolved from the catalogue for older orders. */
+export function itemCategory(state, item) {
+  if (item.category) return item.category
+  return findVariant(state, item.variantId)?.product.category || 'Uncategorised'
+}
+
+/* ---------------------------------------------------------------- pricing */
+
+/** True when a variant carries its own exhibition price. */
+export function hasExhibitionPrice(variant) {
+  return variant?.exhibitionPrice !== null && variant?.exhibitionPrice !== undefined && variant?.exhibitionPrice !== ''
+}
+
+/**
+ * What a variant sells for at a given location.
+ *
+ * Stall pricing is routinely different from the studio list price, so a variant
+ * may carry an `exhibitionPrice`. It applies only when selling at an exhibition;
+ * a direct sale from the warehouse always uses the list price.
+ */
+export function sellingPrice(variant, locationId) {
+  if (!variant) return 0
+  if (isExhibition(locationId) && hasExhibitionPrice(variant)) return money(variant.exhibitionPrice)
+  return money(variant.price)
+}
+
+/* ----------------------------------------------------------- promo codes */
+
+export function findPromo(state, code) {
+  const needle = String(code || '').trim().toUpperCase()
+  if (!needle) return null
+  return (state.promoCodes || []).find((entry) => String(entry.code).toUpperCase() === needle) || null
+}
+
+/**
+ * Checks a promo code against the current cart. Promo codes are created by an
+ * admin, so a valid one is already authorised — it deliberately does not count
+ * towards the salesperson's own discount ceiling.
+ *
+ * `locationId` is where the sale is happening, which a code may be scoped to.
+ */
+export function validatePromo(state, code, subtotal, { locationId, today = nowIso().slice(0, 10) } = {}) {
+  const promo = findPromo(state, code)
+  if (!promo) return { ok: false, error: 'No promo code matches that.' }
+  if (!promo.active) return { ok: false, error: `${promo.code} is no longer active.` }
+  if (promo.startsAt && today < promo.startsAt) {
+    return { ok: false, error: `${promo.code} is not valid until ${promo.startsAt}.` }
+  }
+  if (promo.expiresAt && today > promo.expiresAt) {
+    return { ok: false, error: `${promo.code} expired on ${promo.expiresAt}.` }
+  }
+  if (promo.usageLimit > 0 && (promo.usedCount || 0) >= promo.usageLimit) {
+    return { ok: false, error: `${promo.code} has reached its ${promo.usageLimit}-use limit.` }
+  }
+  if (promo.minSpend > 0 && subtotal < promo.minSpend) {
+    return { ok: false, error: `${promo.code} needs a subtotal of at least ${promo.minSpend}.` }
+  }
+  // A code tied to one stand must not work at another, or at a direct sale.
+  if (promo.exhibitionId && promo.exhibitionId !== 'all' && promo.exhibitionId !== locationId) {
+    const where = state.exhibitions.find((entry) => entry.id === promo.exhibitionId)?.name
+    return { ok: false, error: `${promo.code} only works at ${where || 'another exhibition'}.` }
+  }
+  return { ok: true, promo }
+}
+
 /* ----------------------------------------------------------------- totals */
 
 /**
- * Cart maths. `discount` is `{ type: 'percentage' | 'fixed', value: number }`.
+ * Cart maths. `discount` is `{ type: 'percentage' | 'fixed', value: number }`;
+ * `promo` is an optional promo code record that stacks on top of it.
  */
-export function computeTotals(items, discount, settings) {
+export function computeTotals(items, discount, settings, promo = null) {
   const subtotal = money(
     items.reduce((sum, item) => sum + item.quantity * item.unitPrice - (item.lineDiscount || 0), 0),
   )
@@ -145,8 +211,18 @@ export function computeTotals(items, discount, settings) {
   }
   discountAmount = Math.min(discountAmount, subtotal)
 
+  // The promo comes off what is still payable, so a code and a manual discount
+  // can never combine to more than the order is worth.
+  const afterManual = money(subtotal - discountAmount)
+  let promoAmount = 0
+  if (promo && promo.value > 0) {
+    promoAmount =
+      promo.type === 'percentage' ? money((afterManual * promo.value) / 100) : money(promo.value)
+    promoAmount = Math.min(promoAmount, afterManual)
+  }
+
   const lineDiscounts = money(items.reduce((sum, item) => sum + (item.lineDiscount || 0), 0))
-  const net = money(subtotal - discountAmount)
+  const net = money(subtotal - discountAmount - promoAmount)
 
   let tax = 0
   let total = net
@@ -164,8 +240,10 @@ export function computeTotals(items, discount, settings) {
   return {
     subtotal,
     discountAmount,
+    promoAmount,
+    promoCode: promoAmount > 0 ? promo.code : '',
     lineDiscounts,
-    totalDiscount: money(discountAmount + lineDiscounts),
+    totalDiscount: money(discountAmount + promoAmount + lineDiscounts),
     tax,
     total: money(total),
     itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
@@ -186,6 +264,50 @@ export function nextInvoiceNumber(state, deviceCode = 'A1') {
   return `${state.settings.invoicePrefix}-${stamp}-${deviceCode}${pad(seq, 3)}`
 }
 
+/* ------------------------------------------------------------- payments */
+
+export const SPLIT_LABEL = 'Split'
+
+/**
+ * Allocates a requested split across methods up to what was actually taken.
+ * The rows are filled in order, so an over-tendered final row is trimmed rather
+ * than inflating the recorded takings.
+ */
+export function allocatePaymentParts(parts, cap) {
+  const out = []
+  let left = money(cap)
+  for (const part of parts || []) {
+    if (left <= 0) break
+    const requested = money(part.amount)
+    if (!part.method || requested <= 0) continue
+    const amount = money(Math.min(requested, left))
+    out.push({ method: part.method, amount, reference: part.reference || '' })
+    left = money(left - amount)
+  }
+  return out
+}
+
+/** One label for a payment however it was made. */
+export function paymentMethodLabel(parts, fallback = '') {
+  if (!parts?.length) return fallback
+  if (parts.length === 1) return parts[0].method
+  return SPLIT_LABEL
+}
+
+/**
+ * The payment breakdown of an order, in the shape reports and receipts want.
+ * Orders written before split payments existed carry a single method, so they
+ * are normalised to a one-row breakdown rather than special-cased everywhere.
+ */
+export function orderPaymentParts(order) {
+  if (order.paymentParts?.length) return order.paymentParts
+  const amount = money(order.amountPaid ?? order.total ?? 0)
+  if (amount <= 0) return []
+  return [{ method: order.paymentMethod, amount, reference: order.paymentReference || '' }]
+}
+
+export const isSplitPayment = (order) => (order.paymentParts?.length || 0) > 1
+
 /* ------------------------------------------------------------------ sales */
 
 /**
@@ -203,8 +325,12 @@ export function createOrder(state, payload) {
     salespersonName,
     items,
     discount,
+    promo = null,
     paymentMethod,
     paymentReference,
+    // An ordered list of `{ method, amount, reference }`. When present it
+    // replaces `paymentMethod`/`amountPaid` and records the exact breakdown.
+    paymentParts = null,
     deviceCode = 'A1',
     createdAt = nowIso(),
     note = '',
@@ -212,6 +338,9 @@ export function createOrder(state, payload) {
     // `null` means "paid in full"; a number records a part payment and leaves
     // the order Pending with a balance due.
     amountPaid = null,
+    // Set by an authorised admin to sell past the recorded stock level.
+    overrideOversell = false,
+    overrideBy = null,
   } = payload
 
   const existing = state.orders.find((order) => order.clientId === clientId)
@@ -220,20 +349,34 @@ export function createOrder(state, payload) {
   if (!items.length) throw new Error('Cannot complete a sale with an empty cart.')
 
   // Stock validation happens here so an offline replay cannot oversell silently.
-  if (!state.settings.allowOverselling) {
-    for (const item of items) {
-      const available = getStock(state, exhibitionId, item.variantId)
-      if (item.quantity > available) {
-        throw new Error(`${item.name} — only ${available} left in this exhibition.`)
-      }
+  const oversold = []
+  for (const item of items) {
+    const available = getStock(state, exhibitionId, item.variantId)
+    if (item.quantity > available) {
+      oversold.push({ name: item.name, sku: item.sku, requested: item.quantity, available })
     }
   }
+  if (oversold.length && !state.settings.allowOverselling && !overrideOversell) {
+    const first = oversold[0]
+    throw new Error(`${first.name} — only ${first.available} left in this exhibition.`)
+  }
 
-  const totals = computeTotals(items, discount, state.settings)
+  const totals = computeTotals(items, discount, state.settings, promo)
   const invoiceNo = nextInvoiceNumber(state, deviceCode)
 
-  const paid = amountPaid === null ? totals.total : money(Math.max(0, Math.min(amountPaid, totals.total)))
+  // A split breakdown decides what was taken; otherwise fall back to the single
+  // method plus the part-payment amount.
+  const requested = (paymentParts || []).filter((part) => part.method && money(part.amount) > 0)
+  const paid = requested.length
+    ? money(Math.max(0, Math.min(requested.reduce((sum, part) => sum + money(part.amount), 0), totals.total)))
+    : amountPaid === null
+      ? totals.total
+      : money(Math.max(0, Math.min(amountPaid, totals.total)))
   const balanceDue = money(totals.total - paid)
+
+  const parts = requested.length
+    ? allocatePaymentParts(requested, paid)
+    : allocatePaymentParts([{ method: paymentMethod, amount: paid, reference: paymentReference || '' }], paid)
 
   const order = {
     id: uid('ord'),
@@ -254,15 +397,22 @@ export function createOrder(state, payload) {
     discountValue: discount?.value || 0,
     discountAmount: totals.discountAmount,
     lineDiscounts: totals.lineDiscounts,
+    promoCode: totals.promoCode,
+    promoAmount: totals.promoAmount,
     tax: totals.tax,
     total: totals.total,
-    paymentMethod,
+    paymentMethod: paymentMethodLabel(parts, paymentMethod),
+    paymentParts: parts,
     paymentReference: paymentReference || '',
     status: balanceDue > 0 ? 'Pending' : 'Completed',
     amountPaid: paid,
     balanceDue,
     note,
     offlineCreated,
+    oversell:
+      oversold.length && (overrideOversell || state.settings.allowOverselling)
+        ? { by: overrideBy?.name || '', byId: overrideBy?.id || '', lines: oversold, at: createdAt }
+        : null,
     refundedAmount: 0,
     createdAt,
   }
@@ -281,21 +431,34 @@ export function createOrder(state, payload) {
     })
   }
 
-  // Only money that actually changed hands becomes a payment row.
-  if (paid > 0) {
-    const payment = {
+  // Only money that actually changed hands becomes a payment row — one per
+  // method, so a split sale reconciles correctly against each till.
+  if (parts.length) {
+    const rows = parts.map((part) => ({
       id: uid('pay'),
       orderId: order.id,
       invoiceNo,
-      method: paymentMethod,
-      amount: paid,
+      method: part.method,
+      amount: part.amount,
       status: 'Captured',
-      reference: paymentReference || '',
+      reference: part.reference || '',
       kind: 'payment',
       exhibitionId,
       createdAt,
+    }))
+    next = { ...next, payments: [...rows, ...next.payments] }
+  }
+
+  // A code that actually took money off is a use.
+  if (totals.promoAmount > 0 && totals.promoCode) {
+    next = {
+      ...next,
+      promoCodes: (next.promoCodes || []).map((entry) =>
+        String(entry.code).toUpperCase() === String(totals.promoCode).toUpperCase()
+          ? { ...entry, usedCount: (entry.usedCount || 0) + 1 }
+          : entry,
+      ),
     }
-    next = { ...next, payments: [payment, ...next.payments] }
   }
 
   if (customerId) {
@@ -315,7 +478,7 @@ export function createOrder(state, payload) {
     }
   }
 
-  return { state: next, order, duplicate: false }
+  return { state: next, order, duplicate: false, oversold }
 }
 
 /**
@@ -389,6 +552,7 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
   if (!returning.length) throw new Error('Select at least one item to return.')
 
   let refundAmount = 0
+  const returnedLines = []
   const updatedItems = order.items.map((item) => {
     const line = returning.find((entry) => entry.variantId === item.variantId)
     if (!line) return item
@@ -397,11 +561,21 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
     // Refund the effective price actually paid for the line, discounts included.
     const effectiveUnit = money(item.lineTotal / item.quantity)
     refundAmount = money(refundAmount + effectiveUnit * line.quantity)
+    returnedLines.push({
+      variantId: item.variantId,
+      name: item.name,
+      sku: item.sku,
+      category: item.category || '',
+      quantity: line.quantity,
+    })
     return { ...item, returnedQuantity: (item.returnedQuantity || 0) + line.quantity }
   })
 
   // Apply the same order-level discount ratio and tax treatment as the sale.
-  const discountRatio = order.subtotal ? (order.subtotal - order.discountAmount) / order.subtotal : 1
+  // Promo codes discount the order just as a manual discount does, so both come
+  // off the refund or a return would hand back more than was ever taken.
+  const orderDiscount = money(order.discountAmount + (order.promoAmount || 0))
+  const discountRatio = order.subtotal ? (order.subtotal - orderDiscount) / order.subtotal : 1
   refundAmount = money(refundAmount * discountRatio)
   if (state.settings.taxEnabled && !state.settings.taxInclusive) {
     refundAmount = money(refundAmount * (1 + state.settings.taxRate / 100))
@@ -473,7 +647,37 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
     }
   }
 
-  return { state: next, refundAmount: cashRefund, balanceCleared: balanceReduction, userName }
+  // A first-class return record. Reconstructing this from payments and stock
+  // movements loses the reason and who authorised it, which is exactly what the
+  // returns report and the audit trail need.
+  const record = {
+    id: uid('ret'),
+    kind: 'return',
+    orderId: order.id,
+    invoiceNo: order.invoiceNo,
+    exhibitionId: order.exhibitionId,
+    customerId: order.customerId || null,
+    customerName: order.customerName,
+    salespersonName: order.salespersonName,
+    lines: returnedLines,
+    quantity: returnedLines.reduce((sum, line) => sum + line.quantity, 0),
+    refundAmount: cashRefund,
+    balanceCleared: balanceReduction,
+    method: cashRefund > 0 ? refundMethod : 'None',
+    reason: reason || '',
+    userId: userId || '',
+    userName: userName || '',
+    createdAt: nowIso(),
+  }
+  next = { ...next, returns: [record, ...(next.returns || [])] }
+
+  return {
+    state: next,
+    refundAmount: cashRefund,
+    balanceCleared: balanceReduction,
+    record,
+    userName,
+  }
 }
 
 /* ---------------------------------------------------------------- deletes */
@@ -540,6 +744,7 @@ export function deleteOrders(state, { orderIds, restoreStock = true }) {
       ...next,
       orders: next.orders.filter((order) => !ids.has(order.id)),
       payments: next.payments.filter((payment) => !ids.has(payment.orderId)),
+      returns: (next.returns || []).filter((entry) => !ids.has(entry.orderId)),
       movements: next.movements.filter((movement) => !invoices.has(movement.reference)),
     },
     deleted: targets.length,
@@ -601,6 +806,7 @@ export function deleteExhibition(state, { exhibitionId, returnStock = true, dele
     inventory,
     exhibitions: next.exhibitions.filter((entry) => entry.id !== exhibitionId),
     movements: next.movements.filter((movement) => movement.locationId !== exhibitionId),
+    returns: (next.returns || []).filter((entry) => entry.exhibitionId !== exhibitionId),
   }
 }
 
@@ -626,6 +832,7 @@ export function exhibitionStockRows(state, exhibitionId) {
         variant,
         quantity,
         mainQuantity: getStock(state, MAIN_LOCATION, variant.id),
+        price: sellingPrice(variant, exhibitionId),
         label: variantLabel(variant),
         lowStock: quantity > 0 && quantity <= (variant.minStock ?? state.settings.lowStockThreshold),
         outOfStock: quantity <= 0,

@@ -49,15 +49,36 @@ runs customer → discount → payment, with cash-tendered change calculation. D
 enforced per salesperson across item and order discounts combined, so one cannot be used to dodge
 the other.
 
+**Promo codes** — created by an admin in Settings → Promo codes as a percentage or a fixed amount,
+with an optional minimum spend, usage limit, date window and a single exhibition it works at. Staff
+type the code in at the discount step. A code stacks on top of any manual discount but comes off
+what is still payable, so the two can never exceed the order; and because an admin authorised it
+when they created it, it deliberately does not count against the salesperson's own discount ceiling.
+
+**Split payments** — a sale can be settled across several methods, each row becoming its own payment
+record so every till reconciles on its own. An over-tendered final row is trimmed to what was owed
+rather than inflating the takings, and anything still unallocated is held as a balance due.
+
 **Part payments** — a sale can be taken with only some of the money received. The order is saved as
 Pending with a balance due, stock still leaves with the customer, and the remainder is settled later
 from the Sales page. Returns against an unpaid order clear the outstanding balance first and only
 refund cash for what was actually handed over.
 
+**Exhibition pricing** — a variant can carry a stall price alongside its list price. It applies only
+when selling at an exhibition; a direct sale from the warehouse always charges the list price. The
+POS shows the stall price with the list price struck through, and reporting values stock at whatever
+the location actually charges.
+
 **Inventory** — stock is held per location. The main warehouse and each exhibition have separate
 balances, so stall sales never touch warehouse stock. Transfers move stock between them and every
-change writes a stock movement with a running balance. Overselling is blocked by default and can be
-enabled per business, in which case negative stock is flagged for review.
+change writes a stock movement with a running balance.
+
+**Selling past the stock count** — the shelf count at a busy stall is often simply wrong, so an
+out-of-stock line is not a dead end. Anyone holding the "authorise selling past available stock"
+permission can approve the sale outright; anyone else is prompted for a manager's PIN. Whoever
+authorised it is named on the order, in the audit log and in an alert raised to the owner, and the
+sale is flagged for review until the count is corrected. Overselling with no authorisation at all
+remains blocked unless the business turns it on globally.
 
 **Exhibitions are optional.** Choosing one scopes the POS to that stand's stock and reporting. With
 none selected the POS sells directly from the main warehouse, and those sales are grouped as
@@ -77,13 +98,16 @@ attach it to an email or WhatsApp message.
 **Invoice design** — accent colour, paper size and which fields appear (logo, customer contact,
 exhibition, salesperson, VAT breakdown, QR, terms), with a live preview and a downloadable sample.
 
-**Reporting** — dashboard with sales trend, payment split and staff ranking; sales, inventory,
-payment, staff and customer reports, each exportable to CSV, Excel or PDF; and an exhibition
-closing report that freezes the final numbers and returns unsold stock to the warehouse.
+**Reporting** — dashboard with sales trend, payment split and staff ranking; sales, product,
+category, inventory, payment, discount, returns, staff and customer reports, each exportable to CSV,
+Excel or PDF; and an exhibition closing report that freezes the final numbers — including the
+category split, the busiest trading hours and everything that came back — and returns unsold stock
+to the warehouse.
 
 **Returns and refunds** — partial or full returns against the original invoice. Refunds honour the
-order's discount ratio and tax treatment, restore exhibition stock and post a negative payment row
-for reconciliation.
+order's discount ratio, promo code and tax treatment, restore exhibition stock and post a negative
+payment row per method for reconciliation. Returns and cancellations are both written to a returns
+ledger that keeps the reason and who authorised it, which is what the returns report reads.
 
 **Accounts and roles** — email/password sign-in with PBKDF2-hashed passwords, self-service sign-up
 with optional admin approval, and a PIN keypad for switching staff mid-shift. Roles are editable in

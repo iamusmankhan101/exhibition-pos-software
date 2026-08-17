@@ -1,7 +1,13 @@
 /** Reporting maths shared by the dashboard, the reports page and closing. */
 
 import { MAIN_LOCATION, money } from './format.js'
-import { MOVEMENT_TYPES, getStock } from './domain.js'
+import {
+  MOVEMENT_TYPES,
+  getStock,
+  itemCategory,
+  orderPaymentParts,
+  sellingPrice,
+} from './domain.js'
 
 export function withinRange(iso, from, to) {
   if (!iso) return false
@@ -27,8 +33,12 @@ export function salesSummary(orders) {
   const live = orders.filter(isLive)
   const gross = money(live.reduce((sum, order) => sum + order.subtotal, 0))
   const discounts = money(
-    live.reduce((sum, order) => sum + order.discountAmount + (order.lineDiscounts || 0), 0),
+    live.reduce(
+      (sum, order) => sum + order.discountAmount + (order.promoAmount || 0) + (order.lineDiscounts || 0),
+      0,
+    ),
   )
+  const promoDiscounts = money(live.reduce((sum, order) => sum + (order.promoAmount || 0), 0))
   const tax = money(live.reduce((sum, order) => sum + order.tax, 0))
   const refunds = money(live.reduce((sum, order) => sum + (order.refundedAmount || 0), 0))
   const net = money(live.reduce((sum, order) => sum + order.total, 0) - refunds)
@@ -43,6 +53,7 @@ export function salesSummary(orders) {
   return {
     gross,
     discounts,
+    promoDiscounts,
     tax,
     refunds,
     net,
@@ -87,8 +98,14 @@ export function staffPerformance(state, filter = {}) {
     current.sales = money(current.sales + order.total - (order.refundedAmount || 0))
     current.transactions += 1
     current.items += order.items.reduce((sum, item) => sum + item.quantity, 0)
-    current.discounts = money(current.discounts + order.discountAmount + (order.lineDiscounts || 0))
-    current.methods[order.paymentMethod] = money((current.methods[order.paymentMethod] || 0) + order.total)
+    current.discounts = money(
+      current.discounts + order.discountAmount + (order.promoAmount || 0) + (order.lineDiscounts || 0),
+    )
+    // Attribute each method its own share, so a split sale is not filed under
+    // a single "Split" bucket that no till can be reconciled against.
+    for (const part of orderPaymentParts(order)) {
+      current.methods[part.method] = money((current.methods[part.method] || 0) + part.amount)
+    }
     rows.set(order.salespersonId, current)
   }
 
@@ -122,6 +139,133 @@ export function topProducts(state, filter = {}, limit = 8) {
   }
 
   return [...rows.values()].sort((a, b) => b.revenue - a.revenue).slice(0, limit)
+}
+
+/**
+ * Per-variant sales with the product and category attached — the row shape the
+ * product/category report and its category rollup both build on.
+ */
+export function productSales(state, filter = {}) {
+  const orders = filterOrders(state, filter).filter(isLive)
+  const rows = new Map()
+
+  for (const order of orders) {
+    for (const item of order.items) {
+      const netQty = item.quantity - (item.returnedQuantity || 0)
+      const current = rows.get(item.variantId) || {
+        key: item.variantId,
+        variantId: item.variantId,
+        name: item.name,
+        sku: item.sku,
+        category: itemCategory(state, item),
+        variant: [item.color, item.size].filter(Boolean).join(' · '),
+        quantity: 0,
+        returned: 0,
+        revenue: 0,
+        discounts: 0,
+        orders: 0,
+      }
+      current.quantity += netQty
+      current.returned += item.returnedQuantity || 0
+      current.revenue = money(current.revenue + netQty * item.unitPrice - (item.lineDiscount || 0))
+      current.discounts = money(current.discounts + (item.lineDiscount || 0))
+      current.orders += 1
+      rows.set(item.variantId, current)
+    }
+  }
+
+  return [...rows.values()].sort((a, b) => b.revenue - a.revenue)
+}
+
+/** Rolls product sales up to category level. */
+export function salesByCategory(state, filter = {}) {
+  const rows = new Map()
+  for (const row of productSales(state, filter)) {
+    const current = rows.get(row.category) || {
+      key: row.category,
+      category: row.category,
+      quantity: 0,
+      returned: 0,
+      revenue: 0,
+      lines: 0,
+    }
+    current.quantity += row.quantity
+    current.returned += row.returned
+    current.revenue = money(current.revenue + row.revenue)
+    current.lines += 1
+    rows.set(row.category, current)
+  }
+  return [...rows.values()].sort((a, b) => b.revenue - a.revenue)
+}
+
+/**
+ * Every order that gave money away, item discounts and promo codes included.
+ * `percent` is measured against the full ticket price before any reduction, so
+ * it is comparable across orders regardless of where the discount was applied.
+ */
+export function discountReport(state, filter = {}) {
+  return filterOrders(state, filter)
+    .filter(isLive)
+    .map((order) => {
+      const lineDiscounts = money(order.lineDiscounts || 0)
+      const promoAmount = money(order.promoAmount || 0)
+      const total = money(order.discountAmount + promoAmount + lineDiscounts)
+      const ticket = money(order.subtotal + lineDiscounts)
+      return {
+        key: order.id,
+        id: order.id,
+        invoiceNo: order.invoiceNo,
+        createdAt: order.createdAt,
+        customerName: order.customerName,
+        salespersonName: order.salespersonName,
+        exhibitionId: order.exhibitionId,
+        ticket,
+        lineDiscounts,
+        orderDiscount: money(order.discountAmount),
+        discountLabel:
+          order.discountValue > 0
+            ? order.discountType === 'percentage'
+              ? `${order.discountValue}%`
+              : 'Fixed'
+            : '—',
+        promoCode: order.promoCode || '',
+        promoAmount,
+        total,
+        percent: ticket ? money((total / ticket) * 100) : 0,
+        net: order.total,
+      }
+    })
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.total - a.total)
+}
+
+/**
+ * Returns, refunds and cancellations in one ledger. Reads the `returns` log
+ * rather than reconstructing from payments, so the reason and the member of
+ * staff who authorised it survive.
+ */
+export function returnsReport(state, { exhibitionId, from, to } = {}) {
+  return (state.returns || [])
+    .filter((entry) => {
+      if (exhibitionId && entry.exhibitionId !== exhibitionId) return false
+      return withinRange(entry.createdAt, from, to)
+    })
+    .map((entry) => ({
+      ...entry,
+      key: entry.id,
+      itemSummary: (entry.lines || []).map((line) => `${line.name} ×${line.quantity}`).join('; '),
+    }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+}
+
+export function returnsSummary(rows) {
+  return {
+    count: rows.length,
+    units: rows.reduce((sum, row) => sum + (row.quantity || 0), 0),
+    refunded: money(rows.reduce((sum, row) => sum + (row.refundAmount || 0), 0)),
+    writtenOff: money(rows.reduce((sum, row) => sum + (row.balanceCleared || 0), 0)),
+    cancellations: rows.filter((row) => row.kind === 'cancellation').length,
+  }
 }
 
 export function salesByDay(state, filter = {}) {
@@ -191,7 +335,8 @@ export function inventoryReport(state, exhibitionId) {
         returnedToWarehouse,
         adjustments,
         closing,
-        revenue: money(sold * variant.price),
+        price: sellingPrice(variant, exhibitionId),
+        revenue: money(sold * sellingPrice(variant, exhibitionId)),
         cost: money(sold * variant.cost),
       })
     }
@@ -274,6 +419,7 @@ export function buildClosingReport(state, exhibition) {
     generatedAt: new Date().toISOString(),
     grossSales: summary.gross,
     discounts: summary.discounts,
+    promoDiscounts: summary.promoDiscounts,
     refunds: summary.refunds,
     tax: summary.tax,
     netSales: summary.net,
@@ -294,5 +440,8 @@ export function buildClosingReport(state, exhibition) {
       revenue: row.revenue,
     })),
     topProducts: topProducts(state, filter, 10),
+    categories: salesByCategory(state, filter),
+    hourly: salesByHour(state, filter).filter((row) => row.count > 0),
+    returns: returnsSummary(returnsReport(state, filter)),
   }
 }

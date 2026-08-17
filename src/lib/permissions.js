@@ -29,6 +29,12 @@ export const PERMISSION_GROUPS = [
       { key: 'view.cost', label: 'See cost prices and margins' },
       { key: 'stock.adjust', label: 'Adjust stock levels' },
       {
+        key: 'stock.oversell',
+        label: 'Authorise selling past available stock',
+        hint: 'Approve a sale when the shelf count says there is not enough',
+      },
+      { key: 'promo.manage', label: 'Create and edit promo codes' },
+      {
         key: 'records.delete',
         label: 'Delete records permanently',
         hint: 'Sales, products, customers and exhibitions',
@@ -75,6 +81,8 @@ export const DEFAULT_ROLES = [
       'admin.reports',
       'view.cost',
       'stock.adjust',
+      'stock.oversell',
+      'promo.manage',
     ],
     maxDiscountPercent: 30,
   },

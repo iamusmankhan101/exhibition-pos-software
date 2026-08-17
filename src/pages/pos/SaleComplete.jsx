@@ -50,6 +50,9 @@ export default function SaleComplete({ order, onClose }) {
       })),
       subtotal: order.subtotal,
       discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
+      promoCode: order.promoCode || '',
+      promoAmount: order.promoAmount || 0,
+      paymentParts: order.paymentParts?.length > 1 ? order.paymentParts : [],
       tax: order.tax,
       taxRate: state.settings.taxRate,
       taxInclusive: state.settings.taxInclusive,
@@ -145,7 +148,14 @@ export default function SaleComplete({ order, onClose }) {
           {order.items.reduce((sum, item) => sum + item.quantity, 0) === 1 ? '' : 's'}
           {order.discountAmount + (order.lineDiscounts || 0) > 0 &&
             ` · ${currency(order.discountAmount + (order.lineDiscounts || 0))} discount`}
+          {order.promoAmount > 0 && ` · ${order.promoCode} −${currency(order.promoAmount)}`}
         </div>
+
+        {order.paymentParts?.length > 1 && (
+          <div className="small muted" style={{ marginTop: 4 }}>
+            {order.paymentParts.map((part) => `${part.method} ${currency(part.amount)}`).join(' + ')}
+          </div>
+        )}
 
         {order.balanceDue > 0 && (
           <div

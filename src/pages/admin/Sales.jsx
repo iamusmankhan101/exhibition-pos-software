@@ -6,7 +6,7 @@ import Icon from '../../components/Icon.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { formatDate, money } from '../../lib/format.js'
 import { filterOrders, salesSummary } from '../../lib/analytics.js'
-import { locationName } from '../../lib/domain.js'
+import { isSplitPayment, locationName, orderPaymentParts } from '../../lib/domain.js'
 import { exportCsv, exportExcel, exportPdf } from '../../lib/csv.js'
 
 export default function Sales() {
@@ -61,10 +61,21 @@ export default function Sales() {
     { label: 'Salesperson', value: (order) => order.salespersonName },
     { label: 'Items', value: (order) => order.items.reduce((sum, item) => sum + item.quantity, 0) },
     { label: 'Subtotal', value: (order) => order.subtotal.toFixed(2) },
-    { label: 'Discount', value: (order) => order.discountAmount.toFixed(2) },
+    {
+      label: 'Discount',
+      value: (order) =>
+        (order.discountAmount + (order.promoAmount || 0) + (order.lineDiscounts || 0)).toFixed(2),
+    },
+    { label: 'Promo', value: (order) => order.promoCode || '' },
     { label: 'Tax', value: (order) => order.tax.toFixed(2) },
     { label: 'Total', value: (order) => order.total.toFixed(2) },
-    { label: 'Payment', value: (order) => order.paymentMethod },
+    {
+      label: 'Payment',
+      value: (order) =>
+        orderPaymentParts(order)
+          .map((part) => `${part.method} ${part.amount.toFixed(2)}`)
+          .join(' + ') || order.paymentMethod,
+    },
     { label: 'Status', value: (order) => order.status },
   ]
 
@@ -190,7 +201,12 @@ export default function Sales() {
                   <td>{order.customerName}</td>
                   <td className="small">{order.salespersonName}</td>
                   <td className="right mono">{order.items.reduce((sum, item) => sum + item.quantity, 0)}</td>
-                  <td className="right mono">{order.discountAmount ? `−${currency(order.discountAmount)}` : '—'}</td>
+                  <td className="right mono">
+                    {order.discountAmount || order.promoAmount
+                      ? `−${currency(order.discountAmount + (order.promoAmount || 0))}`
+                      : '—'}
+                    {order.promoCode && <div className="small muted">{order.promoCode}</div>}
+                  </td>
                   <td className="right mono" style={{ fontWeight: 650 }}>
                     {currency(order.total)}
                     {order.balanceDue > 0 && (
@@ -199,7 +215,16 @@ export default function Sales() {
                       </div>
                     )}
                   </td>
-                  <td className="small">{order.paymentMethod}</td>
+                  <td className="small">
+                    {order.paymentMethod}
+                    {isSplitPayment(order) && (
+                      <div className="small muted">
+                        {orderPaymentParts(order)
+                          .map((part) => part.method)
+                          .join(' + ')}
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <StatusBadge status={order.status} />
                   </td>
@@ -320,14 +345,34 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete })
         </span>
       </div>
 
+      {order.oversell && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          Sold past available stock, authorised by {order.oversell.by || 'an override'} —{' '}
+          {order.oversell.lines
+            .map((line) => `${line.name} (${line.requested} of ${line.available})`)
+            .join(', ')}
+        </div>
+      )}
+
       <div className="grid grid-2" style={{ gap: 10 }}>
         <div className="card" style={{ background: 'var(--surface-2)', padding: 14 }}>
           <div className="small muted">Customer</div>
           <div style={{ fontWeight: 620 }}>{order.customerName}</div>
         </div>
         <div className="card" style={{ background: 'var(--surface-2)', padding: 14 }}>
-          <div className="small muted">Payment reference</div>
-          <div style={{ fontWeight: 620 }}>{order.paymentReference || '—'}</div>
+          <div className="small muted">{isSplitPayment(order) ? 'Paid across' : 'Payment reference'}</div>
+          {isSplitPayment(order) ? (
+            <div style={{ fontWeight: 620 }}>
+              {orderPaymentParts(order).map((part) => (
+                <div key={part.method} className="row-between">
+                  <span>{part.method}</span>
+                  <span className="mono">{currency(part.amount)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontWeight: 620 }}>{order.paymentReference || '—'}</div>
+          )}
         </div>
       </div>
 
@@ -375,6 +420,12 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete })
               Discount ({order.discountType === 'percentage' ? `${order.discountValue}%` : 'fixed'})
             </span>
             <span className="mono">−{currency(order.discountAmount)}</span>
+          </div>
+        )}
+        {order.promoAmount > 0 && (
+          <div className="total-line">
+            <span>Promo {order.promoCode}</span>
+            <span className="mono">−{currency(order.promoAmount)}</span>
           </div>
         )}
         {order.tax > 0 && (
@@ -624,7 +675,10 @@ function RefundModal({ order, onClose }) {
     return sum + (item.lineTotal / item.quantity) * line.quantity
   }, 0)
 
-  const discountRatio = order.subtotal ? (order.subtotal - order.discountAmount) / order.subtotal : 1
+  // Must match refundOrder: a promo code reduced the order just as a manual
+  // discount did, so the estimate has to come off both.
+  const orderDiscount = money(order.discountAmount + (order.promoAmount || 0))
+  const discountRatio = order.subtotal ? (order.subtotal - orderDiscount) / order.subtotal : 1
   const taxMultiplier =
     state.settings.taxEnabled && !state.settings.taxInclusive ? 1 + state.settings.taxRate / 100 : 1
   const estimatedRefund = estimate * discountRatio * taxMultiplier

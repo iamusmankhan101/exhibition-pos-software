@@ -52,6 +52,9 @@ export default function Receipt() {
       })),
       subtotal: order.subtotal,
       discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
+      promoCode: order.promoCode || '',
+      promoAmount: order.promoAmount || 0,
+      paymentParts: order.paymentParts?.length > 1 ? order.paymentParts : [],
       tax: order.tax,
       taxInclusive: state.settings.taxInclusive,
       taxRate: state.settings.taxRate,
@@ -206,6 +209,12 @@ export default function Receipt() {
               <span>−{cur(data.discountAmount)}</span>
             </div>
           )}
+          {data.promoAmount > 0 && (
+            <div className="kv">
+              <span>Promo {data.promoCode}</span>
+              <span>−{cur(data.promoAmount)}</span>
+            </div>
+          )}
           {design.showTaxBreakdown !== false && data.tax > 0 && (
             <div className="kv">
               <span>
@@ -223,6 +232,12 @@ export default function Receipt() {
             <span>Paid by</span>
             <span>{data.paymentMethod}</span>
           </div>
+          {data.paymentParts?.map((part) => (
+            <div className="kv" key={part.method} style={{ opacity: 0.75 }}>
+              <span>&nbsp;&nbsp;{part.method}</span>
+              <span>{cur(part.amount)}</span>
+            </div>
+          ))}
           {data.balanceDue > 0 && (
             <>
               <div className="kv">

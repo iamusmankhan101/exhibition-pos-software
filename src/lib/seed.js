@@ -1,7 +1,15 @@
 /** Demo dataset so the system is usable the moment it is opened. */
 
 import { MAIN_LOCATION, money, uid } from './format.js'
-import { MOVEMENT_TYPES, applyStockChange, createOrder, getStock, transferStock } from './domain.js'
+import {
+  MOVEMENT_TYPES,
+  applyStockChange,
+  computeTotals,
+  createOrder,
+  getStock,
+  sellingPrice,
+  transferStock,
+} from './domain.js'
 import { createCredential } from './auth.js'
 import { DEFAULT_ROLES } from './permissions.js'
 
@@ -65,7 +73,7 @@ function barcode() {
   return String(barcodeSeed)
 }
 
-function makeProduct(name, category, collection, price, cost, variants) {
+function makeProduct(name, category, collection, price, cost, variants, exhibitionPrice = null) {
   const base = name
     .split(/\s+/)
     .map((word) => word[0])
@@ -88,17 +96,22 @@ function makeProduct(name, category, collection, price, cost, variants) {
       size: variant.size || 'One Size',
       color: variant.color || 'Natural',
       price: money(variant.price ?? price),
+      // Stall pricing. `null` means the list price applies everywhere.
+      exhibitionPrice:
+        variant.exhibitionPrice ?? (exhibitionPrice === null ? null : money(exhibitionPrice)),
       cost: money(variant.cost ?? cost),
       minStock: 3,
     })),
   }
 }
 
+// `[name, category, collection, price, cost, variants, exhibitionPrice?]` —
+// the last entry is the stall price where it differs from the list price.
 const PRODUCT_BLUEPRINT = [
-  ['Black Silk Scarf', 'Scarves', 'Heritage', 68, 22, [{ color: 'Black' }, { color: 'Ivory' }, { color: 'Sand' }]],
-  ['Embroidered Pashmina', 'Scarves', 'Heritage', 95, 34, [{ color: 'Deep Teal' }, { color: 'Rose' }]],
+  ['Black Silk Scarf', 'Scarves', 'Heritage', 68, 22, [{ color: 'Black' }, { color: 'Ivory' }, { color: 'Sand' }], 60],
+  ['Embroidered Pashmina', 'Scarves', 'Heritage', 95, 34, [{ color: 'Deep Teal' }, { color: 'Rose' }], 85],
   ['Gold Thread Shawl', 'Scarves', 'Bridal', 145, 52, [{ color: 'Champagne' }, { color: 'Midnight' }]],
-  ['Chiffon Hijab', 'Scarves', 'Everyday', 24, 7, [{ color: 'Dusty Pink' }, { color: 'Olive' }, { color: 'Charcoal' }, { color: 'Cream' }]],
+  ['Chiffon Hijab', 'Scarves', 'Everyday', 24, 7, [{ color: 'Dusty Pink' }, { color: 'Olive' }, { color: 'Charcoal' }, { color: 'Cream' }], 20],
   [
     'Linen Wrap Abaya',
     'Abayas',
@@ -174,10 +187,76 @@ const PRODUCT_BLUEPRINT = [
     ],
   ],
   ['Beaded Clutch', 'Accessories', 'Bridal', 88, 29, [{ color: 'Gold' }, { color: 'Silver' }]],
-  ['Leather Belt', 'Accessories', 'Everyday', 45, 14, [{ color: 'Tan', size: 'S/M' }, { color: 'Black', size: 'M/L' }]],
-  ['Silk Scrunchie Set', 'Accessories', 'Everyday', 18, 5, [{ color: 'Mixed' }]],
-  ['Hijab Magnet Pins', 'Accessories', 'Everyday', 12, 3, [{ color: 'Rose Gold' }, { color: 'Pearl' }]],
+  ['Leather Belt', 'Accessories', 'Everyday', 45, 14, [{ color: 'Tan', size: 'S/M' }, { color: 'Black', size: 'M/L' }], 39],
+  ['Silk Scrunchie Set', 'Accessories', 'Everyday', 18, 5, [{ color: 'Mixed' }], 15],
+  ['Hijab Magnet Pins', 'Accessories', 'Everyday', 12, 3, [{ color: 'Rose Gold' }, { color: 'Pearl' }], 10],
 ]
+
+/** Promo codes an admin would realistically have set up before a show. */
+function makePromoCodes(iso) {
+  return [
+    {
+      id: uid('pmo'),
+      code: 'STALL10',
+      description: '10% off at the stand',
+      type: 'percentage',
+      value: 10,
+      minSpend: 0,
+      usageLimit: 0,
+      usedCount: 0,
+      startsAt: '',
+      expiresAt: '',
+      exhibitionId: 'all',
+      active: true,
+      createdAt: iso(-20),
+    },
+    {
+      id: uid('pmo'),
+      code: 'WELCOME15',
+      description: '£15 off orders over £100',
+      type: 'fixed',
+      value: 15,
+      minSpend: 100,
+      usageLimit: 0,
+      usedCount: 0,
+      startsAt: '',
+      expiresAt: '',
+      exhibitionId: 'all',
+      active: true,
+      createdAt: iso(-20),
+    },
+    {
+      id: uid('pmo'),
+      code: 'PREVIEW20',
+      description: 'Preview evening — 20%, first 40 uses',
+      type: 'percentage',
+      value: 20,
+      minSpend: 0,
+      usageLimit: 40,
+      usedCount: 0,
+      startsAt: '',
+      expiresAt: '',
+      exhibitionId: 'all',
+      active: true,
+      createdAt: iso(-10),
+    },
+    {
+      id: uid('pmo'),
+      code: 'SUMMER24',
+      description: 'Last season — kept for reporting',
+      type: 'percentage',
+      value: 25,
+      minSpend: 0,
+      usageLimit: 0,
+      usedCount: 18,
+      startsAt: '',
+      expiresAt: '',
+      exhibitionId: 'all',
+      active: false,
+      createdAt: iso(-90),
+    },
+  ]
+}
 
 const FIRST_NAMES = [
   'Amina', 'Layla', 'Zara', 'Fatima', 'Noor', 'Hana', 'Yasmin', 'Sofia', 'Maryam', 'Aisha',
@@ -325,15 +404,17 @@ export async function buildSeedState() {
   const customers = Array.from({ length: 18 }, (_, index) => makeCustomer(index))
 
   let state = {
-    version: 1,
+    version: 2,
     settings: DEFAULT_SETTINGS,
     roles: DEFAULT_ROLES.map((role) => ({ ...role })),
     users,
     products,
     exhibitions,
     customers,
+    promoCodes: makePromoCodes(iso),
     orders: [],
     payments: [],
+    returns: [],
     inventory: {},
     movements: [],
     auditLogs: [],
@@ -390,6 +471,7 @@ export async function buildSeedState() {
 
 function generateDemoSales(state, exhibition, staff, customers, { count, days, dayOffset = 0 }) {
   const methods = ['Cash', 'Card', 'Card', 'Card', 'Bank Transfer', 'Online Payment']
+  const activePromos = (state.promoCodes || []).filter((entry) => entry.active && !entry.usageLimit)
   let next = state
 
   for (let i = 0; i < count; i += 1) {
@@ -411,11 +493,13 @@ function generateDemoSales(state, exhibition, staff, customers, { count, days, d
         variantId: entry.variant.id,
         name: entry.product.name,
         sku: entry.variant.sku,
+        category: entry.product.category,
         size: entry.variant.size,
         color: entry.variant.color,
         image: entry.product.image,
         quantity,
-        unitPrice: entry.variant.price,
+        listPrice: entry.variant.price,
+        unitPrice: sellingPrice(entry.variant, exhibition.id),
         lineDiscount: 0,
       })
     }
@@ -430,12 +514,19 @@ function generateDemoSales(state, exhibition, staff, customers, { count, days, d
         ? { type: 'percentage', value: randomFrom([5, 10, 10, 15]) }
         : { type: 'percentage', value: 0 }
 
+    // Roughly one sale in eight came in on a promo code, and one in ten was
+    // settled across two methods — enough for both reports to have shape.
+    const promo = Math.random() < 0.12 ? randomFrom(activePromos) : null
     const dayBack = dayOffset - randomInt(0, days - 1)
     const created = new Date()
     created.setDate(created.getDate() + dayBack)
     created.setHours(randomInt(10, 18), randomInt(0, 59), randomInt(0, 59), 0)
 
     try {
+      const totals = computeTotals(picked, discount, next.settings, promo)
+      const split = Math.random() < 0.1 && totals.total > 40
+      const cashPart = money(Math.round(totals.total * randomFrom([0.3, 0.4, 0.5])))
+
       const result = createOrder(next, {
         clientId: uid('cli'),
         exhibitionId: exhibition.id,
@@ -445,7 +536,14 @@ function generateDemoSales(state, exhibition, staff, customers, { count, days, d
         salespersonName: staffMember.name,
         items: picked,
         discount,
+        promo,
         paymentMethod: randomFrom(methods),
+        paymentParts: split
+          ? [
+              { method: 'Cash', amount: cashPart },
+              { method: 'Card', amount: money(totals.total - cashPart) },
+            ]
+          : null,
         deviceCode: randomFrom(['A1', 'B2']),
         createdAt: created.toISOString(),
       })

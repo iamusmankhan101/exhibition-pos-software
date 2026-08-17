@@ -5,7 +5,7 @@ import { EmptyState, Field, ImagePicker, Modal, StatusBadge, Thumb } from '../..
 import Icon from '../../components/Icon.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { MAIN_LOCATION, uid } from '../../lib/format.js'
-import { getStock } from '../../lib/domain.js'
+import { getStock, hasExhibitionPrice } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
 
 const blankVariant = () => ({
@@ -15,6 +15,8 @@ const blankVariant = () => ({
   size: 'One Size',
   color: '',
   price: 0,
+  // `null` means the list price applies at the stall too.
+  exhibitionPrice: null,
   cost: 0,
   minStock: 3,
 })
@@ -139,6 +141,10 @@ export default function Products() {
                 const prices = product.variants.map((variant) => variant.price)
                 const min = Math.min(...prices)
                 const max = Math.max(...prices)
+                // Only worth showing when the stall actually charges something else.
+                const stallPrices = product.variants
+                  .filter((variant) => hasExhibitionPrice(variant) && variant.exhibitionPrice !== variant.price)
+                  .map((variant) => Number(variant.exhibitionPrice))
                 return (
                   <tr
                     key={product.id}
@@ -165,6 +171,14 @@ export default function Products() {
                     <td className="small">{product.category}</td>
                     <td className="right mono">
                       {min === max ? currency(min) : `${currency(min)}–${currency(max)}`}
+                      {stallPrices.length > 0 && (
+                        <div className="small muted" style={{ fontWeight: 500 }}>
+                          stall{' '}
+                          {Math.min(...stallPrices) === Math.max(...stallPrices)
+                            ? currency(Math.min(...stallPrices))
+                            : `${currency(Math.min(...stallPrices))}–${currency(Math.max(...stallPrices))}`}
+                        </div>
+                      )}
                     </td>
                     {can('view.cost') && (
                       <td className="right mono small muted">
@@ -374,6 +388,9 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
     for (const variant of draft.variants) {
       if (!variant.sku.trim()) return setError('Every variant needs a SKU.')
       if (!(variant.price > 0)) return setError(`Set a selling price for ${variant.sku}.`)
+      if (hasExhibitionPrice(variant) && !(Number(variant.exhibitionPrice) > 0)) {
+        return setError(`Clear the exhibition price for ${variant.sku} or set it above zero.`)
+      }
     }
     const skus = draft.variants.map((variant) => variant.sku.trim().toLowerCase())
     if (new Set(skus).size !== skus.length) return setError('Two variants share the same SKU.')
@@ -391,6 +408,7 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
         ...variant,
         sku: variant.sku.trim(),
         price: Number(variant.price),
+        exhibitionPrice: hasExhibitionPrice(variant) ? Number(variant.exhibitionPrice) : null,
         cost: Number(variant.cost),
         minStock: Number(variant.minStock) || 0,
       })),
@@ -521,6 +539,20 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
                   step="0.01"
                   value={variant.price}
                   onChange={(event) => patchVariant(variant.id, { price: event.target.value })}
+                />
+              </Field>
+              <Field label="Exhibition price" hint="Leave blank to charge the list price at the stall.">
+                <input
+                  className="input"
+                  type="number"
+                  step="0.01"
+                  placeholder="Same as list"
+                  value={hasExhibitionPrice(variant) ? variant.exhibitionPrice : ''}
+                  onChange={(event) =>
+                    patchVariant(variant.id, {
+                      exhibitionPrice: event.target.value === '' ? null : event.target.value,
+                    })
+                  }
                 />
               </Field>
               {can('view.cost') && (

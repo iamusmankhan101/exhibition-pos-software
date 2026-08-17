@@ -6,7 +6,14 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
-import { computeTotals, findByCode, findVariant, getStock } from '../../lib/domain.js'
+import {
+  computeTotals,
+  findByCode,
+  findVariant,
+  getStock,
+  hasExhibitionPrice,
+  sellingPrice,
+} from '../../lib/domain.js'
 import { formatTime, money, variantLabel } from '../../lib/format.js'
 import { Field, Modal, SyncPill, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
@@ -42,6 +49,9 @@ export default function POS() {
   const [cartOpen, setCartOpen] = useState(false)
   const [completed, setCompleted] = useState(null)
   const [discountItem, setDiscountItem] = useState(null)
+  const [oversellRequest, setOversellRequest] = useState(null)
+  // Who authorised selling past the stock count for this sale, if anyone.
+  const [oversellApproval, setOversellApproval] = useState(null)
   const [clock, setClock] = useState(() => new Date().toISOString())
 
   const exhibitionId = sellLocationId
@@ -87,10 +97,13 @@ export default function POS() {
         const variants = product.variants.map((variant) => ({
           ...variant,
           stock: getStock(state, exhibitionId, variant.id),
+          // What this stall actually charges, which may not be the list price.
+          sellPrice: sellingPrice(variant, exhibitionId),
         }))
         const totalStock = variants.reduce((sum, variant) => sum + Math.max(0, variant.stock), 0)
-        const minPrice = Math.min(...variants.map((variant) => variant.price))
-        return { ...product, variants, totalStock, minPrice }
+        const minPrice = Math.min(...variants.map((variant) => variant.sellPrice))
+        const listPrice = Math.min(...variants.map((variant) => variant.price))
+        return { ...product, variants, totalStock, minPrice, listPrice }
       })
       .filter((product) => {
         if (category === 'Recent') return product.variants.some((v) => recentVariantIds.includes(v.id))
@@ -115,44 +128,51 @@ export default function POS() {
 
   // State updaters must stay pure, so stock validation and the toast happen
   // before setCart rather than inside the updater.
+  /** Puts a line in the cart, no questions asked. Stock is checked by callers. */
+  const putInCart = useCallback((product, variant, quantity) => {
+    if (navigator.vibrate) navigator.vibrate(12)
+    setCart((current) =>
+      current.some((item) => item.variantId === variant.id)
+        ? current.map((item) =>
+            item.variantId === variant.id ? { ...item, quantity: item.quantity + quantity } : item,
+          )
+        : [
+            {
+              productId: product.id,
+              variantId: variant.id,
+              name: product.name,
+              sku: variant.sku,
+              category: product.category,
+              size: variant.size,
+              color: variant.color,
+              image: product.image,
+              quantity,
+              // `listPrice` is kept alongside so the receipt can show what the
+              // customer would have paid off the stall.
+              listPrice: money(variant.price),
+              unitPrice: sellingPrice(variant, exhibitionId),
+              lineDiscount: 0,
+            },
+            ...current,
+          ],
+    )
+  }, [exhibitionId])
+
   const addVariant = useCallback(
     (product, variant, quantity = 1) => {
       const available = getStock(state, exhibitionId, variant.id)
       const existing = cartRef.current.find((item) => item.variantId === variant.id)
       const nextQty = (existing?.quantity || 0) + quantity
 
-      if (!state.settings.allowOverselling && nextQty > available) {
-        actions.toast(
-          available <= 0 ? `${product.name} is out of stock` : `Only ${available} left of ${product.name}`,
-          'warn',
-        )
+      if (!state.settings.allowOverselling && nextQty > available && !oversellApproval) {
+        // Rather than a dead end, offer the authorised way through.
+        setOversellRequest({ product, variant, quantity, available, requested: nextQty })
         return
       }
 
-      if (navigator.vibrate) navigator.vibrate(12)
-      setCart((current) =>
-        current.some((item) => item.variantId === variant.id)
-          ? current.map((item) =>
-              item.variantId === variant.id ? { ...item, quantity: item.quantity + quantity } : item,
-            )
-          : [
-              {
-                productId: product.id,
-                variantId: variant.id,
-                name: product.name,
-                sku: variant.sku,
-                size: variant.size,
-                color: variant.color,
-                image: product.image,
-                quantity,
-                unitPrice: variant.price,
-                lineDiscount: 0,
-              },
-              ...current,
-            ],
-      )
+      putInCart(product, variant, quantity)
     },
-    [state, exhibitionId, actions],
+    [state, exhibitionId, putInCart, oversellApproval],
   )
 
   const setQuantity = (variantId, quantity) => {
@@ -161,8 +181,18 @@ export default function POS() {
       return
     }
     const available = getStock(state, exhibitionId, variantId)
-    if (!state.settings.allowOverselling && quantity > available) {
-      actions.toast(`Only ${available} available`, 'warn')
+    if (!state.settings.allowOverselling && quantity > available && !oversellApproval) {
+      const found = findVariant(state, variantId)
+      if (found) {
+        setOversellRequest({
+          product: found.product,
+          variant: found.variant,
+          quantity: quantity - (cartRef.current.find((i) => i.variantId === variantId)?.quantity || 0),
+          available,
+          requested: quantity,
+          setTo: quantity,
+        })
+      }
       return
     }
     setCart((current) =>
@@ -170,7 +200,10 @@ export default function POS() {
     )
   }
 
-  const clearCart = () => setCart([])
+  const clearCart = () => {
+    setCart([])
+    setOversellApproval(null)
+  }
 
   const applyLineDiscount = (variantId, amount) =>
     setCart((current) =>
@@ -189,8 +222,7 @@ export default function POS() {
   /* -------------------------------------------------------------- actions */
 
   const handleProductTap = (product) => {
-    const sellable = product.variants.filter((variant) => variant.stock > 0 || state.settings.allowOverselling)
-    if (sellable.length === 1 && product.variants.length === 1) {
+    if (product.variants.length === 1) {
       addVariant(product, product.variants[0])
       return
     }
@@ -320,12 +352,15 @@ export default function POS() {
         <div className="product-grid">
           {products.map((product) => {
             const out = product.totalStock <= 0 && !state.settings.allowOverselling
+            // An out-of-stock line stays tappable for anyone who could authorise
+            // selling it anyway — the modal is where that decision gets made.
+            const blocked = out && !can('stock.oversell') && !oversellApproval
             return (
               <button
                 key={product.id}
-                className={`product-card ${out ? 'disabled' : ''}`}
-                onClick={() => !out && handleProductTap(product)}
-                disabled={out}
+                className={`product-card ${blocked ? 'disabled' : ''}`}
+                onClick={() => !blocked && handleProductTap(product)}
+                disabled={blocked}
               >
                 <Thumb src={product.image} name={product.name} className="product-thumb">
                   <span className="stock-pill">{out ? 'Out' : product.totalStock}</span>
@@ -339,9 +374,17 @@ export default function POS() {
                   <div className="product-price">
                     {currency(product.minPrice)}
                     {product.variants.length > 1 &&
-                      Math.max(...product.variants.map((v) => v.price)) !== product.minPrice && (
+                      Math.max(...product.variants.map((v) => v.sellPrice)) !== product.minPrice && (
                         <span className="small muted"> +</span>
                       )}
+                    {product.listPrice > product.minPrice && (
+                      <span
+                        className="small muted"
+                        style={{ textDecoration: 'line-through', marginLeft: 6, fontWeight: 500 }}
+                      >
+                        {currency(product.listPrice)}
+                      </span>
+                    )}
                   </div>
                   {out ? (
                     <div className="small" style={{ color: 'var(--danger)' }}>
@@ -434,7 +477,14 @@ export default function POS() {
                           −{currency(item.lineDiscount)}
                         </div>
                       ) : (
-                        <div className="small muted">{currency(item.unitPrice)} each</div>
+                        <div className="small muted">
+                          {currency(item.unitPrice)} each
+                          {item.listPrice > item.unitPrice && (
+                            <span style={{ textDecoration: 'line-through', marginLeft: 5 }}>
+                              {currency(item.listPrice)}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>
@@ -530,10 +580,29 @@ export default function POS() {
       {checkoutOpen && (
         <CheckoutModal
           cart={cart}
+          oversellApproval={oversellApproval}
           onClose={() => setCheckoutOpen(false)}
           onComplete={onSaleComplete}
         />
       )}
+
+      <OversellModal
+        request={oversellRequest}
+        onClose={() => setOversellRequest(null)}
+        onApprove={(approver) => {
+          setOversellApproval(approver)
+          const { product, variant, quantity, setTo } = oversellRequest
+          if (setTo) {
+            setCart((current) =>
+              current.map((item) => (item.variantId === variant.id ? { ...item, quantity: setTo } : item)),
+            )
+          } else {
+            putInCart(product, variant, quantity)
+          }
+          setOversellRequest(null)
+          actions.toast(`Stock limit overridden by ${approver.name}`, 'warn')
+        }}
+      />
 
       <LineDiscountModal
         item={discountItem}
@@ -551,6 +620,123 @@ export default function POS() {
 }
 
 /* ------------------------------------------------------------ sub-views */
+
+/**
+ * Selling past the recorded stock level.
+ *
+ * The count is often simply wrong at a busy stall — a returned item never went
+ * back on the system, or the allocation was mistyped — so this is a decision
+ * someone senior takes rather than a wall. Whoever authorises it is named on the
+ * sale and in the audit log.
+ */
+function OversellModal({ request, onClose, onApprove }) {
+  const { state, user, roles, can } = useApp()
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setPin('')
+    setError('')
+  }, [request])
+
+  if (!request) return null
+
+  const { product, variant, available, requested } = request
+  const selfApprove = can('stock.oversell')
+
+  const approvers = state.users.filter(
+    (entry) =>
+      entry.active &&
+      entry.id !== user.id &&
+      roles.find((role) => role.id === entry.role)?.permissions.some((p) => p === '*' || p === 'stock.oversell'),
+  )
+
+  const submit = () => {
+    const match = approvers.find((entry) => entry.pin === pin.trim())
+    if (!match) {
+      setError('That PIN does not belong to anyone who can authorise this.')
+      return
+    }
+    onApprove({ id: match.id, name: match.name })
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={available <= 0 ? 'Out of stock' : 'Not enough stock'}
+      subtitle={`${product.name} · ${variantLabel(variant) || 'Standard'}`}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          {selfApprove ? (
+            <button
+              className="btn btn-danger"
+              onClick={() => onApprove({ id: user.id, name: user.name })}
+            >
+              Sell anyway
+            </button>
+          ) : (
+            <button className="btn btn-danger" disabled={pin.length < 4} onClick={submit}>
+              Authorise
+            </button>
+          )}
+        </>
+      }
+    >
+      <div className="card" style={{ background: 'var(--surface-2)' }}>
+        <div className="total-line">
+          <span>On the system here</span>
+          <span className="mono">{available}</span>
+        </div>
+        <div className="total-line">
+          <span>This sale needs</span>
+          <span className="mono">{requested}</span>
+        </div>
+        <div className="total-line grand" style={{ fontSize: 16 }}>
+          <span>Short by</span>
+          <span className="mono" style={{ color: 'var(--danger)' }}>
+            {requested - available}
+          </span>
+        </div>
+      </div>
+
+      {selfApprove ? (
+        <p className="small muted" style={{ margin: 0 }}>
+          Selling anyway records {user.name} as having authorised it, flags the sale for review and
+          leaves the exhibition stock negative until it is counted and corrected.
+        </p>
+      ) : approvers.length ? (
+        <>
+          <p className="small muted" style={{ margin: 0 }}>
+            A manager or admin needs to approve this. Their PIN records who authorised it.
+          </p>
+          <Field label="Authorising PIN">
+            <input
+              className="input mono"
+              type="password"
+              inputMode="numeric"
+              autoFocus
+              value={pin}
+              maxLength={6}
+              onChange={(event) => setPin(event.target.value.replace(/\D/g, ''))}
+              onKeyDown={(event) => event.key === 'Enter' && pin.length >= 4 && submit()}
+              placeholder="••••"
+            />
+          </Field>
+          {error && <div className="small" style={{ color: 'var(--danger)' }}>{error}</div>}
+        </>
+      ) : (
+        <p className="small muted" style={{ margin: 0 }}>
+          Nobody with authority to override is set up on this device. Adjust the stock count in
+          Inventory instead.
+        </p>
+      )}
+    </Modal>
+  )
+}
 
 /** Per-line discount, capped at the salesperson's own limit. */
 function LineDiscountModal({ item, maxPercent, onClose, onApply }) {
@@ -672,9 +858,11 @@ function VariantPicker({ product, onClose, onPick }) {
   const variants = product.variants.map((variant) => ({
     ...variant,
     stock: getStock(state, sellLocationId, variant.id),
+    sellPrice: sellingPrice(variant, sellLocationId),
+    stallPriced: hasExhibitionPrice(variant) && sellingPrice(variant, sellLocationId) !== variant.price,
   }))
   const active = selected ? variants.find((variant) => variant.id === selected) : null
-  const max = active ? active.stock : 0
+  const max = active ? Math.max(1, active.stock) : 0
 
   return (
     <Modal
@@ -693,7 +881,7 @@ function VariantPicker({ product, onClose, onPick }) {
               </div>
             </div>
             <button className="btn btn-primary" onClick={() => onPick(active, quantity)}>
-              Add {quantity} · {currency(active.price * quantity)}
+              Add {quantity} · {currency(active.sellPrice * quantity)}
             </button>
           </>
         )
@@ -716,9 +904,8 @@ function VariantPicker({ product, onClose, onPick }) {
             <button
               key={variant.id}
               className="list-item"
-              disabled={out}
               style={{
-                opacity: out ? 0.45 : 1,
+                opacity: out ? 0.55 : 1,
                 borderColor: selected === variant.id ? 'var(--brand)' : 'transparent',
                 background: selected === variant.id ? 'var(--brand-soft)' : 'var(--surface-2)',
               }}
@@ -732,7 +919,17 @@ function VariantPicker({ product, onClose, onPick }) {
                 <div className="small muted mono">{variant.sku}</div>
               </div>
               <div className="right">
-                <div style={{ fontWeight: 680 }}>{currency(variant.price)}</div>
+                <div style={{ fontWeight: 680 }}>
+                  {currency(variant.sellPrice)}
+                  {variant.stallPriced && (
+                    <span
+                      className="small muted"
+                      style={{ textDecoration: 'line-through', marginLeft: 6, fontWeight: 500 }}
+                    >
+                      {currency(variant.price)}
+                    </span>
+                  )}
+                </div>
                 <div className="small" style={{ color: out ? 'var(--danger)' : 'var(--muted)' }}>
                   {out ? 'Out of stock' : `${variant.stock} left`}
                 </div>

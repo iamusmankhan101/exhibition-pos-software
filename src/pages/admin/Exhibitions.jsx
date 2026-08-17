@@ -502,6 +502,72 @@ function ReportBody({ report }) {
         )}
       </div>
 
+      {report.categories?.length > 0 && (
+        <div className="card" style={{ background: 'var(--surface-2)' }}>
+          <div className="card-title" style={{ marginBottom: 10 }}>
+            Categories
+          </div>
+          {report.categories.map((row) => (
+            <div key={row.key} className="total-line">
+              <span>
+                {row.category} <span className="muted small">· {row.quantity} units</span>
+              </span>
+              <span className="mono">{currency(row.revenue)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {report.hourly?.length > 0 && (
+        <div className="card" style={{ background: 'var(--surface-2)' }}>
+          <div className="card-title" style={{ marginBottom: 10 }}>
+            Busiest hours
+          </div>
+          {/* Which hours to staff next time is the whole point of this section. */}
+          {[...report.hourly]
+            .sort((a, b) => b.total - a.total)
+            .slice(0, 6)
+            .map((row) => (
+              <div key={row.hour} className="total-line">
+                <span>
+                  {String(row.hour).padStart(2, '0')}:00{' '}
+                  <span className="muted small">· {row.count} sales</span>
+                </span>
+                <span className="mono">{currency(row.total)}</span>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {report.returns?.count > 0 && (
+        <div className="card" style={{ background: 'var(--surface-2)' }}>
+          <div className="card-title" style={{ marginBottom: 10 }}>
+            Returns
+          </div>
+          <div className="total-line">
+            <span>Returns and cancellations</span>
+            <span className="mono">
+              {report.returns.count}
+              {report.returns.cancellations > 0 && ` (${report.returns.cancellations} cancelled)`}
+            </span>
+          </div>
+          <div className="total-line">
+            <span>Units back on the shelf</span>
+            <span className="mono">{report.returns.units}</span>
+          </div>
+          <div className="total-line">
+            <span>Refunded</span>
+            <span className="mono">{currency(report.returns.refunded)}</span>
+          </div>
+          {report.returns.writtenOff > 0 && (
+            <div className="total-line">
+              <span>Unpaid balance written off</span>
+              <span className="mono">{currency(report.returns.writtenOff)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="card" style={{ background: 'var(--surface-2)' }}>
         <div className="card-title" style={{ marginBottom: 10 }}>
           Staff
