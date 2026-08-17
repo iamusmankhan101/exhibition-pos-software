@@ -39,7 +39,23 @@ Other scripts:
 ```bash
 npm run build     # production build
 npm run preview   # serve the build on the local network
+npm test          # run the rule tests
+npm run test:watch
 ```
+
+## Tests
+
+`npm test` runs the business rules headlessly — no browser, no React — because
+`domain.js` keeps them as pure `state → state` functions.
+
+- `src/lib/domain.test.js` covers the rules one at a time: stall pricing, cart maths, promo
+  validation and stacking, split and part payments, stock limits and the oversell override, refunds,
+  deletion and offline replay.
+- `src/lib/acceptance.test.js` is the run the brief asks for — 26 sales through one exhibition
+  covering discounts, every payment method, split and part payments and promo codes, then a
+  settlement, a return, a cancellation and an offline replay. It asserts the things that must never
+  drift: stock matches what was sold, the payment ledger matches what the orders say was received,
+  every invoice number is unique, and a receipt survives the round trip to the customer's phone.
 
 ## What it does
 
@@ -98,7 +114,8 @@ attach it to an email or WhatsApp message.
 **Invoice design** — accent colour, paper size and which fields appear (logo, customer contact,
 exhibition, salesperson, VAT breakdown, QR, terms), with a live preview and a downloadable sample.
 
-**Reporting** — dashboard with sales trend, payment split and staff ranking; sales, product,
+**Reporting** — dashboard with sales trend, sales by hour, sales by category, payment split and
+staff ranking; sales, product,
 category, inventory, payment, discount, returns, staff and customer reports, each exportable to CSV,
 Excel or PDF; and an exhibition closing report that freezes the final numbers — including the
 category split, the busiest trading hours and everything that came back — and returns unsold stock
@@ -108,6 +125,12 @@ to the warehouse.
 order's discount ratio, promo code and tax treatment, restore exhibition stock and post a negative
 payment row per method for reconciliation. Returns and cancellations are both written to a returns
 ledger that keeps the reason and who authorised it, which is what the returns report reads.
+
+**Devices and sessions** — every phone, tablet and laptop that signs in registers itself with a
+heartbeat, so Settings → Data & devices shows which are live, who last used each one and when. A
+device can be named, and one that has been lost or should no longer be trading can be blocked: it
+cannot sign anyone in, and it signs itself out the moment it next sees the change. Sales it already
+took stay on the record.
 
 **Accounts and roles** — email/password sign-in with PBKDF2-hashed passwords, self-service sign-up
 with optional admin approval, and a PIN keypad for switching staff mid-shift. Roles are editable in
@@ -138,6 +161,7 @@ src/
     receipt.js     receipt encoding, QR, WhatsApp/SMS/email delivery
     idb.js         IndexedDB wrapper
     seed.js        demo dataset
+    *.test.js      rule tests and the acceptance run
   components/      layout, icons, chart, shared UI
   pages/           login, POS, receipt, admin screens
 ```

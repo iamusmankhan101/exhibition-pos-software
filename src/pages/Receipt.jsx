@@ -49,6 +49,7 @@ export default function Receipt() {
         variant: [item.color, item.size].filter(Boolean).join(' / '),
         quantity: item.quantity,
         unitPrice: item.unitPrice,
+        listPrice: item.listPrice || 0,
       })),
       subtotal: order.subtotal,
       discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
@@ -191,9 +192,20 @@ export default function Receipt() {
                 {item.name}
                 <small>
                   {[item.variant, `${item.quantity} × ${cur(item.unitPrice)}`].filter(Boolean).join(' · ')}
+                  {/* What the customer would have paid off the stall. */}
+                  {item.listPrice > item.unitPrice && (
+                    <> · <span style={{ textDecoration: 'line-through' }}>{cur(item.listPrice)}</span></>
+                  )}
                 </small>
               </div>
-              <div style={{ fontWeight: 600 }}>{cur(item.quantity * item.unitPrice)}</div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontWeight: 600 }}>{cur(item.quantity * item.unitPrice)}</div>
+                {item.listPrice > item.unitPrice && (
+                  <small style={{ opacity: 0.7 }}>
+                    saved {cur((item.listPrice - item.unitPrice) * item.quantity)}
+                  </small>
+                )}
+              </div>
             </div>
           ))}
 

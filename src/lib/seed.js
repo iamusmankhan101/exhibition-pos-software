@@ -415,6 +415,8 @@ export async function buildSeedState() {
     orders: [],
     payments: [],
     returns: [],
+    // Filled in by whichever devices actually sign in.
+    devices: [],
     inventory: {},
     movements: [],
     auditLogs: [],

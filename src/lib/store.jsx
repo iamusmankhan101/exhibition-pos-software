@@ -18,6 +18,7 @@ import {
   getStock,
   orderPaymentParts,
   refundOrder,
+  releasePromoUse,
   settlePayment,
   transferStock,
 } from './domain.js'
@@ -76,6 +77,7 @@ function migrate(state) {
     auditLogs: state.auditLogs || [],
     promoCodes: state.promoCodes || [],
     returns: state.returns || [],
+    devices: state.devices || [],
     counters: state.counters || { invoice: 1 },
   }
 }
@@ -173,6 +175,59 @@ export function AppProvider({ children }) {
       return next
     })
   }, [])
+
+  /* ---------------------------------------------------------- devices */
+
+  /**
+   * Keeps a registry of the devices trading on this dataset.
+   *
+   * There is no server to hold a session table, so a device records itself in
+   * the shared state and refreshes a heartbeat. That is what makes an owner able
+   * to see which tablets are live and cut one off if it goes missing.
+   */
+  const currentDevice = useMemo(
+    () => (state?.devices || []).find((entry) => entry.id === deviceId) || null,
+    [state, deviceId],
+  )
+
+  useEffect(() => {
+    if (!state) return
+    const known = state.devices?.find((entry) => entry.id === deviceId)
+    const stale = !known?.lastSeenAt || Date.now() - new Date(known.lastSeenAt).getTime() > 5 * 60 * 1000
+    const userChanged = (known?.lastUserId || null) !== (session.userId || null)
+    // Writing on every render would loop, so only a real change or a cold
+    // heartbeat is worth persisting.
+    if (known && !stale && !userChanged) return
+
+    setState((current) => {
+      const account = current.users.find((entry) => entry.id === session.userId) || null
+      const existing = (current.devices || []).find((entry) => entry.id === deviceId)
+      const record = {
+        id: deviceId,
+        code: deviceCode,
+        label: existing?.label || '',
+        firstSeenAt: existing?.firstSeenAt || nowIso(),
+        lastSeenAt: nowIso(),
+        lastUserId: account?.id || null,
+        lastUserName: account?.name || '',
+        revokedAt: existing?.revokedAt || null,
+        userAgent: existing?.userAgent || navigator.userAgent,
+      }
+      return {
+        ...current,
+        devices: existing
+          ? current.devices.map((entry) => (entry.id === deviceId ? record : entry))
+          : [...(current.devices || []), record],
+      }
+    })
+  }, [state, session.userId, deviceId, deviceCode, setState])
+
+  // A revoked device signs itself out as soon as it sees the revocation.
+  useEffect(() => {
+    if (!currentDevice?.revokedAt || !session.userId) return
+    updateSession({ userId: null })
+    toast('This device was signed out by an administrator', 'warn')
+  }, [currentDevice?.revokedAt, session.userId, updateSession, toast])
 
   /** Appends an audit row. Called from inside a state updater. */
   const withAudit = useCallback(
@@ -300,6 +355,11 @@ export function AppProvider({ children }) {
   const actions = useMemo(() => {
     const guard = () => {
       if (!stateRef.current) throw new Error('Data is still loading.')
+      // A revoked device must not be able to sign anybody back in.
+      const device = (stateRef.current.devices || []).find((entry) => entry.id === deviceId)
+      if (device?.revokedAt) {
+        throw new Error('This device has been blocked by an administrator.')
+      }
     }
 
     const removeProducts = (productIds) => {
@@ -886,6 +946,9 @@ export function AppProvider({ children }) {
             0,
           )
 
+          // The sale is void, so its promo code is available again.
+          next = releasePromoUse(next, order.promoCode)
+
           next = {
             ...next,
             orders: next.orders.map((entry) =>
@@ -1172,6 +1235,73 @@ export function AppProvider({ children }) {
         toast('Promo code deleted', 'warn')
       },
 
+      /* devices */
+
+      renameDevice(targetId, label) {
+        setState((current) => ({
+          ...current,
+          devices: (current.devices || []).map((entry) =>
+            entry.id === targetId ? { ...entry, label: String(label || '').trim() } : entry,
+          ),
+        }))
+      },
+
+      /**
+       * Cuts a device off. It cannot sign anyone in, and if it is online it
+       * signs itself out the moment it sees this.
+       */
+      revokeDevice(targetId) {
+        let name = ''
+        setState((current) => {
+          const device = (current.devices || []).find((entry) => entry.id === targetId)
+          if (!device || device.revokedAt) return current
+          name = device.label || device.code
+          const draft = {
+            ...current,
+            devices: current.devices.map((entry) =>
+              entry.id === targetId ? { ...entry, revokedAt: nowIso() } : entry,
+            ),
+          }
+          return withAudit(
+            draft,
+            'Blocked a device',
+            `${name}${device.lastUserName ? ` · last used by ${device.lastUserName}` : ''}`,
+            'device',
+            targetId,
+          )
+        })
+        if (name) toast(`${name} blocked`, 'warn')
+      },
+
+      restoreDevice(targetId) {
+        setState((current) => {
+          const device = (current.devices || []).find((entry) => entry.id === targetId)
+          if (!device) return current
+          return withAudit(
+            {
+              ...current,
+              devices: current.devices.map((entry) =>
+                entry.id === targetId ? { ...entry, revokedAt: null } : entry,
+              ),
+            },
+            'Restored a device',
+            device.label || device.code,
+            'device',
+            targetId,
+          )
+        })
+        toast('Device restored', 'success')
+      },
+
+      /** Drops a device from the list. It re-registers if it is still in use. */
+      forgetDevice(targetId) {
+        setState((current) => ({
+          ...current,
+          devices: (current.devices || []).filter((entry) => entry.id !== targetId),
+        }))
+        toast('Device removed from the list', 'warn')
+      },
+
       /* settings */
       saveSettings(settings) {
         setState((current) => withAudit({ ...current, settings }, 'Updated settings', '', 'settings', 'settings'))
@@ -1253,13 +1383,14 @@ export function AppProvider({ children }) {
       syncing,
       deviceId,
       deviceCode,
+      currentDevice,
       pendingSync: state?.outbox.filter((entry) => entry.status === 'pending').length || 0,
       toasts,
       actions,
       roles: state?.roles || DEFAULT_ROLES,
       can: (permission) => userCan(user, state?.roles, permission),
     }),
-    [state, session, user, activeExhibition, online, syncing, deviceId, deviceCode, toasts, actions],
+    [state, session, user, activeExhibition, online, syncing, deviceId, deviceCode, currentDevice, toasts, actions],
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

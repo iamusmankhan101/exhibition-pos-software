@@ -160,11 +160,18 @@ export async function buildInvoicePdf(data, qrDataUrl) {
     const name = doc.splitTextToSize(item.name, colQty - margin - 8)[0]
     doc.text(name, margin + 3, y)
 
-    if (item.variant) {
+    // The stall price is what was charged, so the list price goes underneath as
+    // the "original price" the invoice is expected to show.
+    const discounted = item.listPrice > item.unitPrice
+    const subLine = [item.variant, discounted ? `was ${currency(item.listPrice)}` : '']
+      .filter(Boolean)
+      .join('  ·  ')
+
+    if (subLine) {
       doc.setFont('helvetica', 'normal')
       doc.setFontSize(8)
       doc.setTextColor(140, 147, 158)
-      doc.text(item.variant, margin + 3, y + 4)
+      doc.text(subLine, margin + 3, y + 4)
       doc.setTextColor(20, 23, 28)
     }
 
@@ -175,7 +182,7 @@ export async function buildInvoicePdf(data, qrDataUrl) {
     doc.setFont('helvetica', 'bold')
     doc.text(currency(item.quantity * item.unitPrice), colTotal - 3, y, { align: 'right' })
 
-    y += item.variant ? 10 : 7
+    y += subLine ? 10 : 7
     doc.setDrawColor(240, 242, 245)
     doc.line(margin, y - 2.5, right, y - 2.5)
   }

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Avatar, Confirm, EmptyState, Field, ImagePicker, Modal, Tabs } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
-import { uid } from '../../lib/format.js'
+import { formatDate, uid } from '../../lib/format.js'
 import { ALL_PERMISSIONS, PERMISSION_GROUPS } from '../../lib/permissions.js'
 
 const CURRENCIES = [
@@ -449,6 +449,10 @@ export default function Settings() {
               before resetting.
             </p>
           </div>
+
+          <div className="card col" style={{ gridColumn: '1 / -1' }}>
+            <DevicesPanel />
+          </div>
         </div>
       )}
 
@@ -476,6 +480,160 @@ export default function Settings() {
 }
 
 /* ---------------------------------------------------------------- roles */
+
+/* --------------------------------------------------------------- devices */
+
+/**
+ * Every device that has signed in to this dataset, with a heartbeat.
+ *
+ * With no server there is no session table, so each device registers itself in
+ * the shared state. Blocking one stops it signing anybody in and signs it out
+ * as soon as it next sees the change.
+ */
+function DevicesPanel() {
+  const { state, actions, deviceId, can } = useApp()
+  const [renaming, setRenaming] = useState(null)
+  const [label, setLabel] = useState('')
+  const [blocking, setBlocking] = useState(null)
+
+  const mayManage = can('admin.settings')
+  const devices = [...(state.devices || [])].sort((a, b) => {
+    if (a.id === deviceId) return -1
+    if (b.id === deviceId) return 1
+    return (b.lastSeenAt || '').localeCompare(a.lastSeenAt || '')
+  })
+
+  /** "Active now" matters more than a timestamp when you are looking for a lost tablet. */
+  const seen = (device) => {
+    if (!device.lastSeenAt) return 'Never'
+    const minutes = Math.floor((Date.now() - new Date(device.lastSeenAt).getTime()) / 60000)
+    if (minutes < 6) return 'Active now'
+    if (minutes < 60) return `${minutes} minutes ago`
+    if (minutes < 60 * 24) return `${Math.floor(minutes / 60)} hours ago`
+    return formatDate(device.lastSeenAt, true)
+  }
+
+  return (
+    <>
+      <div className="row-between">
+        <div>
+          <div className="card-title">Devices &amp; sessions</div>
+          <div className="card-sub">
+            Every phone, tablet and laptop that has signed in. Block one that has been lost or should
+            no longer be selling.
+          </div>
+        </div>
+      </div>
+
+      {devices.length === 0 ? (
+        <EmptyState title="No devices recorded yet">
+          A device appears here the first time somebody signs in on it.
+        </EmptyState>
+      ) : (
+        <div className="stack-sm">
+          {devices.map((device) => {
+            const isThis = device.id === deviceId
+            return (
+              <div key={device.id} className="list-item" style={{ cursor: 'default' }}>
+                <div className="grow" style={{ minWidth: 0 }}>
+                  <div className="row" style={{ gap: 7 }}>
+                    <span style={{ fontWeight: 620 }}>{device.label || `Device ${device.code}`}</span>
+                    <span className="badge mono">{device.code}</span>
+                    {isThis && <span className="badge badge-brand">This device</span>}
+                    {device.revokedAt && <span className="badge badge-danger">Blocked</span>}
+                  </div>
+                  <div className="small muted">
+                    {device.lastUserName ? `Last signed in by ${device.lastUserName}` : 'Nobody signed in'} ·{' '}
+                    {seen(device)}
+                  </div>
+                  <div className="small muted" style={{ marginTop: 3 }}>
+                    First seen {formatDate(device.firstSeenAt)}
+                  </div>
+                </div>
+
+                {mayManage && (
+                  <div className="row nowrap" style={{ gap: 6 }}>
+                    <button
+                      className="btn btn-sm"
+                      onClick={() => {
+                        setRenaming(device)
+                        setLabel(device.label || '')
+                      }}
+                    >
+                      Rename
+                    </button>
+                    {device.revokedAt ? (
+                      <button className="btn btn-sm" onClick={() => actions.restoreDevice(device.id)}>
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-sm btn-danger"
+                        disabled={isThis}
+                        title={isThis ? 'You cannot block the device you are using' : 'Block this device'}
+                        onClick={() => setBlocking(device)}
+                      >
+                        Block
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {renaming && (
+        <Modal
+          open
+          onClose={() => setRenaming(null)}
+          title={`Rename ${renaming.label || `Device ${renaming.code}`}`}
+          subtitle="A name makes a device recognisable in the audit log"
+          footer={
+            <>
+              <button className="btn" onClick={() => setRenaming(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  actions.renameDevice(renaming.id, label)
+                  setRenaming(null)
+                }}
+              >
+                Save name
+              </button>
+            </>
+          }
+        >
+          <Field label="Device name">
+            <input
+              className="input"
+              autoFocus
+              value={label}
+              placeholder="Front counter iPad"
+              onChange={(event) => setLabel(event.target.value)}
+            />
+          </Field>
+        </Modal>
+      )}
+
+      <Confirm
+        open={Boolean(blocking)}
+        title={`Block ${blocking?.label || `device ${blocking?.code}`}?`}
+        message={
+          `Nobody will be able to sign in on it, and it signs itself out as soon as it is next online. ` +
+          `Sales it already took stay on the record. You can restore it at any time.`
+        }
+        confirmLabel="Block device"
+        danger
+        onConfirm={() => actions.revokeDevice(blocking.id)}
+        onClose={() => setBlocking(null)}
+      />
+    </>
+  )
+}
 
 /* ----------------------------------------------------------- promo codes */
 

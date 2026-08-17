@@ -193,6 +193,26 @@ export function validatePromo(state, code, subtotal, { locationId, today = nowIs
   return { ok: true, promo }
 }
 
+/**
+ * Gives a use of a promo code back.
+ *
+ * A limited-use code must not be burned by a sale that never stood, or a
+ * 40-use preview code runs out on cancellations alone. Returns are deliberately
+ * not covered: the sale did happen and the order stays on the books as one, so
+ * only voiding it outright releases the use.
+ */
+export function releasePromoUse(state, code) {
+  if (!code) return state
+  return {
+    ...state,
+    promoCodes: (state.promoCodes || []).map((entry) =>
+      String(entry.code).toUpperCase() === String(code).toUpperCase()
+        ? { ...entry, usedCount: Math.max(0, (entry.usedCount || 0) - 1) }
+        : entry,
+    ),
+  }
+}
+
 /* ----------------------------------------------------------------- totals */
 
 /**
@@ -712,6 +732,11 @@ export function deleteOrders(state, { orderIds, restoreStock = true }) {
   const invoices = new Set(targets.map((order) => order.invoiceNo))
 
   for (const order of targets) {
+    // A cancelled order already handed its promo use back.
+    if (order.promoCode && order.status !== 'Cancelled') {
+      next = releasePromoUse(next, order.promoCode)
+    }
+
     if (restoreStock && order.status !== 'Cancelled') {
       for (const item of order.items) {
         const outstanding = item.quantity - (item.returnedQuantity || 0)

@@ -47,6 +47,7 @@ export default function SaleComplete({ order, onClose }) {
         variant: [item.color, item.size].filter(Boolean).join(' / '),
         quantity: item.quantity,
         unitPrice: item.unitPrice,
+        listPrice: item.listPrice || 0,
       })),
       subtotal: order.subtotal,
       discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),

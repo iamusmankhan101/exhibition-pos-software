@@ -11,6 +11,8 @@ import {
   filterOrders,
   lowStockRows,
   paymentBreakdown,
+  salesByCategory,
+  salesByHour,
   salesSummary,
   staffPerformance,
   topProducts,
@@ -79,6 +81,30 @@ export default function Dashboard() {
   const products = useMemo(() => topProducts(state, filter, 5), [state, filter])
   const customers = useMemo(() => customerSummary(state, filter), [state, filter])
   const lowStock = useMemo(() => lowStockRows(state, sellLocationId), [state, sellLocationId])
+  const categories = useMemo(() => salesByCategory(state, filter), [state, filter])
+
+  /**
+   * Trading hours only. All 24 buckets would squash the bars that matter into
+   * the middle of a chart that is mostly empty overnight.
+   */
+  const hourly = useMemo(() => {
+    const buckets = salesByHour(state, filter)
+    const active = buckets.filter((row) => row.count > 0)
+    if (!active.length) return []
+    const first = Math.max(0, Math.min(...active.map((row) => row.hour)) - 1)
+    const last = Math.min(23, Math.max(...active.map((row) => row.hour)) + 1)
+    return buckets.slice(first, last + 1).map((row) => ({
+      label: String(row.hour).padStart(2, '0'),
+      value: row.total,
+      meta: { date: `${String(row.hour).padStart(2, '0')}:00 – ${String(row.hour + 1).padStart(2, '0')}:00`, ...row },
+    }))
+  }, [state, filter])
+
+  const peakHour = useMemo(
+    () => hourly.reduce((best, row) => (best && best.value >= row.value ? best : row), null),
+    [hourly],
+  )
+  const categoryTotal = categories.reduce((sum, row) => sum + row.revenue, 0)
 
   const exhibitionStock = useMemo(
     () =>
@@ -377,6 +403,65 @@ export default function Dashboard() {
                       {currency(row.revenue)}
                     </div>
                     <div className="small muted">{row.quantity} sold</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ------------------------------------------------ hours + categories */}
+      <div className="grid grid-2">
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <div className="card-title">Sales by hour</div>
+              <div className="card-sub">
+                {peakHour ? `Busiest at ${peakHour.label}:00 · ${currency(peakHour.value)}` : 'When the stand is busy'}
+              </div>
+            </div>
+          </div>
+          {hourly.length === 0 ? (
+            <p className="small muted">No sales recorded in this period.</p>
+          ) : (
+            <BarChart
+              data={hourly}
+              format={currency}
+              height={180}
+              tooltipRows={(row) => [
+                ['Sales', currency(row.value)],
+                ['Orders', String(row.meta.count)],
+              ]}
+            />
+          )}
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div className="card-title">Sales by category</div>
+            <Link className="card-sub" to="/admin/reports">
+              Full report →
+            </Link>
+          </div>
+          {categories.length === 0 ? (
+            <p className="small muted">Nothing sold in this period.</p>
+          ) : (
+            <div className="stack-sm">
+              {categories.slice(0, 6).map((row) => (
+                <div key={row.key} className="grow" style={{ minWidth: 0 }}>
+                  <div className="row-between" style={{ marginBottom: 5 }}>
+                    <span style={{ fontWeight: 600, fontSize: 13.5 }}>{row.category}</span>
+                    <span className="mono small" style={{ fontWeight: 650 }}>
+                      {currency(row.revenue)}
+                    </span>
+                  </div>
+                  <div className="bar-track">
+                    <div className="bar-fill" style={{ width: `${(row.revenue / categories[0].revenue) * 100}%` }} />
+                  </div>
+                  <div className="small muted" style={{ marginTop: 4 }}>
+                    {row.quantity} items ·{' '}
+                    {categoryTotal ? Math.round((row.revenue / categoryTotal) * 100) : 0}% of sales
                   </div>
                 </div>
               ))}

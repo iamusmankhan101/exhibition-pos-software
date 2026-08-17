@@ -46,7 +46,13 @@ export function encodeReceipt(order, settings, exhibitionName, customer) {
     sp: order.salespersonName,
     cu: order.customerName,
     cc: design.showCustomerContact === false ? '' : [customer?.whatsapp || customer?.phone, customer?.email].filter(Boolean).join(' · '),
-    it: order.items.map((item) => [item.name, `${item.color || ''}${item.size ? ` / ${item.size}` : ''}`, item.quantity, item.unitPrice]),
+    // The list price is only carried when the stall charged something else, so
+    // a receipt with no special pricing costs no extra fragment bytes.
+    it: order.items.map((item) => {
+      const row = [item.name, `${item.color || ''}${item.size ? ` / ${item.size}` : ''}`, item.quantity, item.unitPrice]
+      if (item.listPrice > item.unitPrice) row.push(item.listPrice)
+      return row
+    }),
     sub: order.subtotal,
     dis: order.discountAmount,
     // Promo and split-payment fields are omitted when they do not apply — the
@@ -90,11 +96,12 @@ export function decodeReceipt(encoded) {
       salespersonName: data.sp,
       customerName: data.cu,
       customerContact: data.cc || '',
-      items: (data.it || []).map(([name, variant, quantity, unitPrice]) => ({
+      items: (data.it || []).map(([name, variant, quantity, unitPrice, listPrice]) => ({
         name,
         variant,
         quantity,
         unitPrice,
+        listPrice: listPrice || 0,
       })),
       subtotal: data.sub,
       discountAmount: data.dis,
