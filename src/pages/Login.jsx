@@ -100,29 +100,47 @@ function Pitch({ logo, name }) {
         <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{name}</span>
       </div>
 
-      <h2>
-        Take the till <strong>anywhere you sell</strong>.
-      </h2>
+      <div className="login-pitch-body">
+        <h2>
+          Take the till <strong>anywhere you sell</strong>.
+        </h2>
 
-      <div className="login-pitch-stats">
-        <div><b>30–60s</b> from scan to receipt</div>
-        <div><b>Offline-first</b> — no signal needed to trade</div>
-      </div>
-
-      <div className="login-pitch-rule" />
-
-      <div className="login-pitch-list">
-        <div>
-          <span className="login-pitch-icon"><Icon name="box" size={14} /></span>
-          <span><b>Stock per stand</b>, never mixed with the warehouse</span>
+        <div className="login-pitch-stats">
+          <div>
+            <b>30–60s</b> from scan to receipt
+          </div>
+          <div>
+            <b>Offline-first</b> — no signal needed to trade
+          </div>
         </div>
-        <div>
-          <span className="login-pitch-icon"><Icon name="card" size={14} /></span>
-          <span><b>Split and part payments</b>, reconciled per till</span>
-        </div>
-        <div>
-          <span className="login-pitch-icon"><Icon name="trend" size={14} /></span>
-          <span><b>Live sales</b> on the owner's phone</span>
+
+        <div className="login-pitch-rule" />
+
+        <div className="login-pitch-list">
+          <div>
+            <span className="login-pitch-icon">
+              <Icon name="box" size={14} />
+            </span>
+            <span>
+              <b>Stock per stand</b>, never mixed with the warehouse
+            </span>
+          </div>
+          <div>
+            <span className="login-pitch-icon">
+              <Icon name="card" size={14} />
+            </span>
+            <span>
+              <b>Split and part payments</b>, reconciled per till
+            </span>
+          </div>
+          <div>
+            <span className="login-pitch-icon">
+              <Icon name="trend" size={14} />
+            </span>
+            <span>
+              <b>Live sales</b> on the owner&apos;s phone
+            </span>
+          </div>
         </div>
       </div>
     </div>
