@@ -27,7 +27,16 @@ import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
 import { createSupabaseAdapter } from './supabaseAdapter.js'
 import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
-import { createCredential, emailProblem, normaliseEmail, passwordProblem, verifyPassword } from './auth.js'
+import {
+  createCredential,
+  createPinCredential,
+  emailProblem,
+  normaliseEmail,
+  passwordProblem,
+  verifyPassword,
+  verifyPin,
+} from './auth.js'
+import { getSupabase } from './supabase.js'
 
 const STATE_KEY = 'state'
 const SESSION_KEY = 'tareez.session'
@@ -434,18 +443,68 @@ export function AppProvider({ children }) {
         return account
       },
 
-      /** PIN sign-in: fast switching between staff on a shared stall device. */
-      login(userId, pin) {
+      /**
+       * PIN sign-in: fast switching between staff on a shared stall device.
+       *
+       * Always local, and deliberately so. Once a device has a staff list the
+       * stall keeps trading through a dead connection, which is the whole point
+       * of the offline design — a salesperson must never be locked out of the
+       * till because the venue wifi dropped.
+       */
+      async login(userId, pin) {
         guard()
         const account = stateRef.current.users.find((entry) => entry.id === userId)
         if (!account) throw new Error('User not found.')
         if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
-        if (account.pin !== String(pin)) throw new Error('Incorrect PIN.')
-        return api.startSession(account,'PIN')
+        if (!(await verifyPin(pin, account))) throw new Error('Incorrect PIN.')
+        return api.startSession(account, 'PIN')
       },
 
+      /**
+       * Password sign-in.
+       *
+       * With Supabase configured this is the one step that needs a connection:
+       * it is what mints the session the row-level security policies check, and
+       * it refreshes the cached staff list that PIN sign-in then works against
+       * offline. Set the device up before the show, and the show itself needs
+       * nothing.
+       */
       async signIn(email, password) {
         guard()
+
+        if (supabaseConfigured) {
+          if (!navigator.onLine) {
+            throw new Error(
+              'You need to be online to sign in with a password. Use your PIN if you have signed in on this device before.',
+            )
+          }
+          const sb = await getSupabase()
+          const { data, error } = await sb.auth.signInWithPassword({
+            email: normaliseEmail(email),
+            password,
+          })
+          // Supabase's own message is deliberately vague about which half was
+          // wrong, which is the behaviour we want anyway.
+          if (error) throw new Error(error.message)
+
+          const account = await api.refreshIdentity(data.user)
+          if (!account) {
+            // Distinguish "nobody has been set up yet" from "you specifically
+            // are not linked", because the first is a seeding step and the
+            // second is usually an auth id that does not match.
+            const empty = !stateRef.current.users.some((entry) => entry.authId)
+            throw new Error(
+              empty
+                ? 'No staff records exist yet. Run supabase/seed.sql to create the first account.'
+                : `No staff record is linked to ${data.user.email}. An admin needs to finish setting it up.`,
+            )
+          }
+          if (!account.active) {
+            throw new Error('This account is awaiting approval or has been deactivated.')
+          }
+          return api.startSession(account, 'Password')
+        }
+
         const account = stateRef.current.users.find(
           (entry) => normaliseEmail(entry.email) === normaliseEmail(email),
         )
@@ -454,7 +513,66 @@ export function AppProvider({ children }) {
         const ok = account ? await verifyPassword(password, account) : false
         if (!ok) throw new Error('That email and password do not match.')
         if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
-        return api.startSession(account,'Password')
+        return api.startSession(account, 'Password')
+      },
+
+      /**
+       * Pulls the staff list and roles down and merges them into local state.
+       *
+       * Only identity — never sales. Replacing the whole dataset here would
+       * throw away anything this device took offline and has not yet synced,
+       * which is precisely how a day's takings goes missing.
+       */
+      async refreshIdentity(authUser) {
+        const sb = await getSupabase()
+        if (!sb) return null
+
+        const [staffResult, roleResult] = await Promise.all([
+          sb.from('staff').select('*'),
+          sb.from('roles').select('*'),
+        ])
+        // Surface a failed query rather than letting it look like an empty
+        // table — the two need very different fixes and the message is the only
+        // clue anyone gets.
+        if (staffResult.error) throw new Error(`Could not read staff: ${staffResult.error.message}`)
+        const staffRows = staffResult.data
+        const roleRows = roleResult.data
+
+        const users = (staffRows || []).map((row) => ({
+          id: row.id,
+          authId: row.auth_id,
+          name: row.name,
+          email: row.email,
+          role: row.role,
+          active: row.active,
+          maxDiscountPercent: row.max_discount_percent ?? undefined,
+          pinHash: row.pin_hash || '',
+          pinSalt: row.pin_salt || '',
+          createdAt: row.created_at,
+        }))
+
+        const roles = (roleRows || []).map((row) => ({
+          id: row.id,
+          name: row.name,
+          description: row.description || '',
+          system: row.system,
+          permissions: row.permissions || [],
+          maxDiscountPercent: Number(row.max_discount_percent) || 0,
+        }))
+
+        if (users.length) {
+          setState((current) => ({
+            ...current,
+            users,
+            roles: roles.length ? roles : current.roles,
+          }))
+        }
+
+        return (
+          users.find((entry) => entry.authId === authUser?.id) ||
+          users.find((entry) => normaliseEmail(entry.email) === normaliseEmail(authUser?.email)) ||
+          null
+        )
       },
 
       async signUp({ name, email, password }) {
@@ -476,6 +594,22 @@ export function AppProvider({ children }) {
           throw new Error('An account already uses that email address.')
         }
 
+        // Register with Supabase first: if the address is already taken there,
+        // nothing should be written locally.
+        let authId = null
+        if (supabaseConfigured) {
+          if (!navigator.onLine) {
+            throw new Error('You need to be online to create an account.')
+          }
+          const sb = await getSupabase()
+          const { data, error } = await sb.auth.signUp({
+            email: normaliseEmail(email),
+            password,
+          })
+          if (error) throw new Error(error.message)
+          authId = data.user?.id || null
+        }
+
         const credential = await createCredential(password)
         // The very first account owns the system, otherwise use the configured
         // default role and approval rule.
@@ -493,11 +627,13 @@ export function AppProvider({ children }) {
 
         const account = {
           id: uid('usr'),
+          authId,
           name: name.trim(),
           email: normaliseEmail(email),
           phone: '',
           role: role.id,
           pin,
+          ...(await createPinCredential(pin)),
           active: !needsApproval,
           maxDiscountPercent: role.maxDiscountPercent ?? 0,
           createdAt: nowIso(),
@@ -556,24 +692,35 @@ export function AppProvider({ children }) {
       approveUser(userId) {
         setState((current) => {
           const account = current.users.find((entry) => entry.id === userId)
-          return withAudit(
+          if (!account) return current
+          const record = { ...account, active: true }
+          const draft = withAudit(
             {
               ...current,
-              users: current.users.map((entry) =>
-                entry.id === userId ? { ...entry, active: true } : entry,
-              ),
+              users: current.users.map((entry) => (entry.id === userId ? record : entry)),
             },
             'Approved account',
-            account?.name || userId,
+            account.name || userId,
             'user',
             userId,
           )
+          // Approval is the switch that lets RLS see them at all, so it has to
+          // reach the server, not just this device.
+          return withOutbox(draft, 'user.save', uid('apr'), record)
         })
         toast('Account approved', 'success')
       },
 
       logout() {
         updateSession({ userId: null })
+        // Drop the Supabase session too, but never block the sign-out on it —
+        // offline, `signOut` cannot reach the server and the user still expects
+        // the till to lock.
+        if (supabaseConfigured) {
+          getSupabase()
+            .then((sb) => sb?.auth.signOut())
+            .catch(() => {})
+        }
       },
 
       selectExhibition(exhibitionId) {
@@ -1085,33 +1232,44 @@ export function AppProvider({ children }) {
       },
 
       /* staff */
-      saveUser(account) {
+      async saveUser(account) {
+        // Hash here rather than in the form, so every path that saves a user —
+        // the staff editor, sign-up, anything added later — gets it. A plaintext
+        // `pin` on the way in is replaced, never stored and never synced.
+        const { pin, ...rest } = account
+        const account_ = /^\d{4,6}$/.test(String(pin || ''))
+          ? { ...rest, ...(await createPinCredential(pin)) }
+          : account
+
         setState((current) => {
-          const exists = current.users.some((entry) => entry.id === account.id)
+          const exists = current.users.some((entry) => entry.id === account_.id)
+          const record = exists ? account_ : { ...account_, createdAt: nowIso() }
           const users = exists
-            ? current.users.map((entry) => (entry.id === account.id ? account : entry))
-            : [{ ...account, createdAt: nowIso() }, ...current.users]
-          return withAudit(
+            ? current.users.map((entry) => (entry.id === account_.id ? record : entry))
+            : [record, ...current.users]
+          const draft = withAudit(
             { ...current, users },
             exists ? 'Updated user' : 'Created user',
-            `${account.name} (${account.role})`,
+            `${account_.name} (${account_.role})`,
             'user',
-            account.id,
+            account_.id,
           )
+          return withOutbox(draft, 'user.save', account_.id, record)
         })
-        toast(`Saved ${account.name}`, 'success')
+        toast(`Saved ${account_.name}`, 'success')
       },
 
       deleteUser(userId) {
-        setState((current) =>
-          withAudit(
+        setState((current) => {
+          const draft = withAudit(
             { ...current, users: current.users.filter((entry) => entry.id !== userId) },
             'Deleted user',
             userId,
             'user',
             userId,
-          ),
-        )
+          )
+          return withOutbox(draft, 'user.delete', uid('del'), { userId })
+        })
       },
 
       /* roles */

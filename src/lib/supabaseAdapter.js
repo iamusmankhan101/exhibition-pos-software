@@ -179,6 +179,19 @@ const promoRow = (promo) => ({
   created_at: promo.createdAt,
 })
 
+/** Only the hash of a PIN ever leaves the device that set it. */
+const staffRow = (account) => ({
+  id: account.id,
+  auth_id: account.authId || null,
+  name: account.name,
+  email: account.email,
+  role: account.role,
+  pin_hash: account.pinHash || null,
+  pin_salt: account.pinSalt || null,
+  active: Boolean(account.active),
+  max_discount_percent: account.maxDiscountPercent ?? null,
+})
+
 const auditRow = (log) => ({
   id: log.id,
   user_id: log.userId || '',
@@ -347,14 +360,19 @@ const handlers = {
   async 'user.signup'(entry, state) {
     const account = state.users.find((row) => row.id === entry.payload.id)
     if (!account) return
-    await upsert('staff', {
-      id: account.id,
-      name: account.name,
-      email: account.email,
-      role: account.role,
-      active: Boolean(account.active),
-      max_discount_percent: account.maxDiscountPercent ?? null,
-    })
+    await upsert('staff', staffRow(account))
+  },
+
+  async 'user.save'(entry, state) {
+    const account = state.users.find((row) => row.id === entry.payload.id) || entry.payload
+    await upsert('staff', staffRow(account))
+  },
+
+  async 'user.delete'(entry) {
+    // The auth.users login is left alone: removing someone from the staff list
+    // stops them reaching anything, and deleting an auth account needs the
+    // service role, which the browser must never hold.
+    await remove('staff', 'id', entry.payload.userId)
   },
 }
 

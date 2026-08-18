@@ -305,9 +305,9 @@ function PinPad() {
 
   const staff = state.users.filter((entry) => entry.active)
 
-  const submit = (value) => {
+  const submit = async (value) => {
     try {
-      actions.login(selected.id, value)
+      await actions.login(selected.id, value)
     } catch (err) {
       setError(err.message)
       setPin('')

@@ -139,8 +139,8 @@ export default function Staff() {
         <UserEditor
           account={editing}
           onClose={() => setEditing(null)}
-          onSave={(next) => {
-            actions.saveUser(next)
+          onSave={async (next) => {
+            await actions.saveUser(next)
             setEditing(null)
           }}
           onDelete={
@@ -193,10 +193,9 @@ function UserEditor({ account, onClose, onSave, onDelete }) {
   const save = () => {
     if (!draft.name.trim()) return setError('A name is required.')
     if (!/^\d{4}$/.test(String(draft.pin))) return setError('The PIN must be exactly 4 digits.')
-    const clash = state.users.find(
-      (entry) => entry.id !== draft.id && entry.pin === String(draft.pin) && entry.active,
-    )
-    if (clash) return setError(`That PIN is already used by ${clash.name}.`)
+    // No duplicate-PIN check: PINs are stored hashed, so they cannot be compared
+    // here, and it does not matter — the keypad picks the person first and then
+    // asks for their PIN, so two people sharing 1234 never unlock each other.
     const emailClash = state.users.find(
       (entry) =>
         entry.id !== draft.id &&

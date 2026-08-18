@@ -33,8 +33,12 @@ create table if not exists roles (
   max_discount_percent numeric not null default 0
 );
 
--- Application-level staff record. Credentials live in auth.users; this holds
--- what the POS needs (role, PIN, discount ceiling) and links the two.
+-- Application-level staff record. Passwords live in auth.users; this holds what
+-- the POS needs (role, PIN, discount ceiling) and links the two.
+--
+-- The PIN is hashed with a per-user salt, the same way passwords are. Four
+-- digits will never survive a determined offline attack, but a PIN that syncs
+-- to a server must not sit here in the clear.
 create table if not exists staff (
   id                   text primary key,
   auth_id              uuid references auth.users (id) on delete set null,
@@ -42,10 +46,14 @@ create table if not exists staff (
   email                text unique,
   role                 text references roles (id),
   pin_hash             text,
+  pin_salt             text,
   active               boolean not null default false,
   max_discount_percent numeric,
   created_at           timestamptz not null default now()
 );
+
+-- For projects created before PINs were hashed.
+alter table staff add column if not exists pin_salt text;
 
 /* ------------------------------------------------------------ catalogue */
 
@@ -388,3 +396,76 @@ create policy staff_write       on staff       for all using (has_permission('ad
 alter publication supabase_realtime add table orders;
 alter publication supabase_realtime add table payments;
 alter publication supabase_realtime add table inventory;
+
+/* ------------------------------------------------- default roles */
+
+-- Roles are system constants, not user data: they mirror DEFAULT_ROLES in
+-- src/lib/permissions.js and every staff row has a foreign key to one. Seeding
+-- them here means a fresh project is never in a state where an account cannot
+-- be created because there is no role to give it.
+insert into roles (id, name, description, system, permissions, max_discount_percent)
+values
+  ('admin', 'Admin', 'Full control, including settings, roles and permanent deletion.', true,
+   '{*}', 100),
+  ('manager', 'Manager', 'Runs the floor: sales, stock, customers and reporting — but not system settings.', true,
+   '{pos,sales.own,refund,admin.dashboard,admin.sales,admin.products,admin.inventory,admin.exhibitions,admin.customers,admin.staff,admin.reports,view.cost,stock.adjust,stock.oversell,promo.manage}', 30),
+  ('salesperson', 'Salesperson', 'Sells at the stall and manages customers. No cost prices or reports.', true,
+   '{pos,sales.own,admin.customers}', 10)
+on conflict (id) do update set
+  name                 = excluded.name,
+  description          = excluded.description,
+  permissions          = excluded.permissions,
+  max_discount_percent = excluded.max_discount_percent;
+
+/* --------------------------------------------- account provisioning */
+
+-- Give every new sign-in a staff record automatically.
+--
+-- Without this there is a dead end: RLS needs an active staff row, but creating
+-- one needs an account that already has one, so a fresh project can never be
+-- opened without hand-written SQL. This closes it the same way the app already
+-- behaves offline — the first account to exist owns the system, and everyone
+-- after it arrives inactive and waits for an admin to approve them.
+--
+-- `security definer` is what lets the trigger write past RLS.
+create or replace function handle_new_auth_user() returns trigger as $$
+declare
+  is_first boolean;
+begin
+  select not exists (select 1 from public.staff) into is_first;
+
+  insert into public.staff (id, auth_id, name, email, role, active, max_discount_percent)
+  values (
+    'usr_' || substr(replace(new.id::text, '-', ''), 1, 12),
+    new.id,
+    coalesce(nullif(new.raw_user_meta_data ->> 'name', ''), split_part(new.email, '@', 1)),
+    new.email,
+    case when is_first then 'admin' else 'salesperson' end,
+    is_first,
+    case when is_first then 100 else 10 end
+  )
+  on conflict (email) do update set auth_id = excluded.auth_id;
+
+  return new;
+end;
+$$ language plpgsql security definer;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_auth_user();
+
+-- Anyone who signed up before the trigger existed still needs a record, and the
+-- earliest of them takes the system.
+insert into staff (id, auth_id, name, email, role, active, max_discount_percent)
+select
+  'usr_' || substr(replace(u.id::text, '-', ''), 1, 12),
+  u.id,
+  coalesce(nullif(u.raw_user_meta_data ->> 'name', ''), split_part(u.email, '@', 1)),
+  u.email,
+  case when u.created_at = (select min(created_at) from auth.users) then 'admin' else 'salesperson' end,
+  u.created_at = (select min(created_at) from auth.users),
+  case when u.created_at = (select min(created_at) from auth.users) then 100 else 10 end
+from auth.users u
+where not exists (select 1 from staff s where s.auth_id = u.id or lower(s.email) = lower(u.email))
+on conflict (email) do nothing;

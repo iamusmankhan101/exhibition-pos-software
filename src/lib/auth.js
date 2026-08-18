@@ -61,6 +61,39 @@ export async function verifyPassword(password, user) {
   return safeEqual(candidate, user.passwordHash)
 }
 
+/* ------------------------------------------------------------------ PINs */
+
+/**
+ * PINs get the same treatment as passwords.
+ *
+ * A PIN is only a convenience for switching staff mid-shift on a shared tablet,
+ * but it is still a credential, and once the staff list syncs to a server a
+ * plaintext PIN would be readable by anyone who could read the table. Four
+ * digits will never survive a determined offline attack — the point is that the
+ * PIN is not simply lying there.
+ */
+export async function createPinCredential(pin) {
+  const salt = randomSalt()
+  return { pinSalt: salt, pinHash: await hashPassword(String(pin), salt) }
+}
+
+/**
+ * Checks a PIN against an account.
+ *
+ * Accounts created before PINs were hashed still carry a plaintext `pin`, and a
+ * device that has not re-synced will still be holding those, so both are
+ * accepted. Once `saveUser` rewrites an account the hashed form takes over.
+ */
+export async function verifyPin(pin, account) {
+  const entered = String(pin || '')
+  if (!entered) return false
+  if (account?.pinHash && account?.pinSalt) {
+    return safeEqual(await hashPassword(entered, account.pinSalt), account.pinHash)
+  }
+  if (account?.pin) return safeEqual(entered, String(account.pin))
+  return false
+}
+
 /** Shared rules so sign-up and password changes agree on what is acceptable. */
 export function passwordProblem(password) {
   if (!password || password.length < 8) return 'Use at least 8 characters.'

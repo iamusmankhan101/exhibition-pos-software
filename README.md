@@ -167,6 +167,37 @@ Everything is an upsert keyed by the id the device minted offline, which is what
 queue harmless. `orders.client_id` is `unique`, so a duplicate sale collides at the database rather
 than being caught by application logic.
 
+### Setting it up
+
+1. SQL Editor → run `supabase/schema.sql`
+2. Sign up in the app, or add yourself under Authentication → Users
+
+That is the whole setup. There is no separate seed step: the schema installs a trigger on
+`auth.users` that gives every new sign-in a staff record automatically, and backfills anyone who
+signed up before it existed.
+
+**The first account to exist becomes the admin**, active immediately — the same rule the app already
+follows on an empty local database. Everyone after it arrives as a salesperson awaiting approval, so
+a public sign-up page cannot mint itself access. Staff are then managed in the app under Staff and
+Settings → Roles & access, and those changes sync like anything else.
+
+The trigger runs `security definer`, which is what lets it write past row-level security. Without it
+there is a dead end: RLS needs an active staff row, but creating one needs an account that already
+has one.
+
+### How sign-in works
+
+Password sign-in goes through Supabase and needs a connection — it is what mints the session the RLS
+policies check. It also refreshes the cached staff list, and **PIN sign-in then works entirely
+offline against that cache**. Set a device up before the show and the show itself needs nothing.
+
+A device that has never been online cannot sign in at all; that is the deliberate trade.
+
+PINs are hashed with a per-user salt, the same as passwords. Four digits will never survive a
+determined offline attack — the point is that a PIN which syncs to a server is not sitting there in
+the clear. Accounts that predate the change still carry a plaintext PIN and are still accepted, but
+the hash wins whenever both are present.
+
 ### What is not done yet
 
 Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
@@ -180,8 +211,8 @@ sells at the same stand, three things need to move server-side:
 - **`balanceAfter` on stock movements** is currently computed from the device's local view, so
   interleaved writes from two devices will record misleading running balances.
 
-Auth still runs on-device; `pullEverything()` exists for a cold bootstrap but deliberately does not
-merge into a device that already holds unsynced sales.
+`pullEverything()` exists for a cold bootstrap but deliberately does not merge into a device that
+already holds unsynced sales — guessing there is how a day's takings goes missing.
 
 ## Offline behaviour
 

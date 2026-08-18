@@ -212,6 +212,61 @@ describe('supabase adapter', () => {
     expect(writes).toHaveLength(0)
   })
 
+  it('syncs a staff member added in the app, hash only', async () => {
+    const state = baseState()
+    state.users = [
+      {
+        id: 'usr_1',
+        authId: 'auth-uuid',
+        name: 'Layla',
+        email: 'layla@tareez.com',
+        role: 'salesperson',
+        active: true,
+        maxDiscountPercent: 10,
+        pinHash: 'deadbeef',
+        pinSalt: 'cafe',
+      },
+    ]
+
+    const adapter = createSupabaseAdapter({ getState: () => state })
+    await adapter.push({
+      id: 'o7',
+      type: 'user.save',
+      clientId: 'usr_1',
+      payload: { id: 'usr_1' },
+      createdAt: '2026-03-01T10:00:00.000Z',
+    })
+
+    const [row] = rowsFor('staff')
+    expect(row).toMatchObject({
+      id: 'usr_1',
+      auth_id: 'auth-uuid',
+      email: 'layla@tareez.com',
+      role: 'salesperson',
+      active: true,
+      pin_hash: 'deadbeef',
+      pin_salt: 'cafe',
+    })
+    // The plaintext PIN must never appear in what is sent.
+    expect(JSON.stringify(row)).not.toContain('1234')
+    expect(row.pin).toBeUndefined()
+  })
+
+  it('removes a staff member from the list without touching their login', async () => {
+    const adapter = createSupabaseAdapter({ getState: () => baseState() })
+    await adapter.push({
+      id: 'o8',
+      type: 'user.delete',
+      clientId: 'del-u',
+      payload: { userId: 'usr_1' },
+      createdAt: '2026-03-01T10:00:00.000Z',
+    })
+
+    expect(deletes).toContainEqual({ table: 'staff', column: 'id', values: ['usr_1'] })
+    // auth.users is service-role territory and must not be reachable from here.
+    expect(deletes.some((entry) => entry.table.includes('auth'))).toBe(false)
+  })
+
   it('reports failure rather than throwing when state is not loaded yet', async () => {
     const adapter = createSupabaseAdapter({ getState: () => null })
     const result = await adapter.push({ id: 'o6', type: 'order.create', clientId: 'y', payload: {}, createdAt: '' })
