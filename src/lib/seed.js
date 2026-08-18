@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS = {
   largeDiscountAlertPercent: 25,
   receiptChannels: { whatsapp: true, sms: true, email: true, qr: true },
   invoiceDesign: {
-    accent: '#0d9e59',
+    accent: '#021b8d',
     showLogo: true,
     showQr: true,
     showTaxBreakdown: true,

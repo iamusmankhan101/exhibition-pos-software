@@ -26,7 +26,7 @@ const RANGES = (locationName) => [
 ]
 
 const METHOD_STYLE = {
-  Cash: { icon: 'cash', color: '#0d9e59' },
+  Cash: { icon: 'cash', color: '#021b8d' },
   Card: { icon: 'card', color: '#2f75d8' },
   'Bank Transfer': { icon: 'bank', color: '#7c5cd6' },
   'Online Payment': { icon: 'globe', color: '#d98613' },

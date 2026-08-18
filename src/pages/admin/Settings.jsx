@@ -334,7 +334,7 @@ export default function Settings() {
 
             <Field label="Accent colour" hint="Used on the invoice header, footer bar and logo tile.">
               <div className="row wrap" style={{ gap: 8 }}>
-                {['#0d9e59', '#14171c', '#2f75d8', '#7c5cd6', '#c2410c', '#be185d'].map((swatch) => (
+                {['#021b8d', '#14171c', '#2f75d8', '#7c5cd6', '#c2410c', '#be185d'].map((swatch) => (
                   <button
                     key={swatch}
                     onClick={() => patchDesign({ accent: swatch })}

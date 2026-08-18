@@ -10,7 +10,7 @@ import { formatDate } from './format.js'
 const SIZES = { a4: [210, 297], a5: [148, 210] }
 
 function hexToRgb(hex) {
-  const clean = String(hex || '#0d9e59').replace('#', '')
+  const clean = String(hex || '#021b8d').replace('#', '')
   const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean
   return [
     parseInt(full.slice(0, 2), 16) || 0,

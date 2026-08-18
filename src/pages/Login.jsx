@@ -24,58 +24,107 @@ export default function Login() {
 
   return (
     <div className="login-screen">
-      <div className="login-card">
-        <div className="login-logo">
-          {logo ? <img src={logo} alt="" /> : state.settings.business.name.slice(0, 1)}
+      <div className="login-split">
+        <Pitch logo={logo} name={state.settings.business.name} />
+
+        <div className="login-form-pane">
+          <div className="login-card">
+            {isFirstRun ? (
+              <>
+                <h1 className="center" style={{ marginBottom: 4 }}>
+                  Set up <strong>{state.settings.business.name}</strong>
+                </h1>
+                <p className="center muted small" style={{ margin: '0 0 20px' }}>
+                  This first account gets full admin access.
+                </p>
+                <SignUp firstRun />
+              </>
+            ) : (
+              <>
+                <h1 className="center" style={{ marginBottom: 20 }}>
+                  {mode === 'signup' ? (
+                    <>Create your <strong>account</strong></>
+                  ) : (
+                    <>Sign in to <strong>{state.settings.business.name}</strong></>
+                  )}
+                </h1>
+
+                <div className="seg" style={{ display: 'flex', width: '100%', marginBottom: 16 }}>
+                  <button className={`grow ${mode === 'signin' ? 'active' : ''}`} onClick={() => setMode('signin')}>
+                    Sign in
+                  </button>
+                  <button className={`grow ${mode === 'pin' ? 'active' : ''}`} onClick={() => setMode('pin')}>
+                    Staff PIN
+                  </button>
+                  {state.settings.signup?.enabled && (
+                    <button className={`grow ${mode === 'signup' ? 'active' : ''}`} onClick={() => setMode('signup')}>
+                      Sign up
+                    </button>
+                  )}
+                </div>
+
+                {mode === 'signin' && <SignIn />}
+                {mode === 'pin' && <PinPad />}
+                {mode === 'signup' && <SignUp onDone={() => setMode('signin')} />}
+
+                {mode !== 'pin' && (
+                  <button className="login-alt" onClick={() => setMode(mode === 'signup' ? 'signin' : 'pin')}>
+                    {mode === 'signup' ? (
+                      <>Already have an account? <b>Sign in</b></>
+                    ) : (
+                      <>Sharing a device? <b>Use your staff PIN</b></>
+                    )}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         </div>
-        <h1 className="center" style={{ fontSize: 22 }}>
-          {state.settings.business.name}
-        </h1>
-        <p className="center muted small" style={{ margin: '4px 0 22px' }}>
-          POS &amp; Inventory
-        </p>
-
-        {isFirstRun ? (
-          <FirstRun />
-        ) : (
-          <>
-            <div className="seg" style={{ display: 'flex', width: '100%', marginBottom: 14 }}>
-              <button className={`grow ${mode === 'signin' ? 'active' : ''}`} onClick={() => setMode('signin')}>
-                Sign in
-              </button>
-              <button className={`grow ${mode === 'pin' ? 'active' : ''}`} onClick={() => setMode('pin')}>
-                Staff PIN
-              </button>
-              {state.settings.signup?.enabled && (
-                <button className={`grow ${mode === 'signup' ? 'active' : ''}`} onClick={() => setMode('signup')}>
-                  Sign up
-                </button>
-              )}
-            </div>
-
-            {mode === 'signin' && <SignIn />}
-            {mode === 'pin' && <PinPad />}
-            {mode === 'signup' && <SignUp onDone={() => setMode('signin')} />}
-          </>
-        )}
-
       </div>
     </div>
   )
 }
 
-/* ------------------------------------------------------------- first run */
+/* ----------------------------------------------------------------- pitch */
 
-function FirstRun() {
+/**
+ * The left half. Purely presentational, and hidden below 900px — on a phone at
+ * a stall the form should have the whole screen rather than sit under a pitch
+ * the person reading it has already been sold on.
+ */
+function Pitch({ logo, name }) {
   return (
-    <div className="card">
-      <div className="card-head">
+    <div className="login-pitch">
+      <div className="login-pitch-brand">
+        <div className="login-mark">{logo ? <img src={logo} alt="" /> : name.slice(0, 1)}</div>
+        <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{name}</span>
+      </div>
+
+      <h2>
+        Take the till <strong>anywhere you sell</strong>.
+      </h2>
+
+      <div className="login-pitch-stats">
+        <div><b>30–60s</b> from scan to receipt</div>
+        <div><b>Offline-first</b> — no signal needed to trade</div>
+      </div>
+
+      <div className="login-pitch-rule" />
+
+      <div className="login-pitch-list">
         <div>
-          <div className="card-title">Create the owner account</div>
-          <div className="card-sub">This first account gets full admin access.</div>
+          <span className="login-pitch-icon"><Icon name="box" size={14} /></span>
+          <span><b>Stock per stand</b>, never mixed with the warehouse</span>
+        </div>
+        <div>
+          <span className="login-pitch-icon"><Icon name="card" size={14} /></span>
+          <span><b>Split and part payments</b>, reconciled per till</span>
+        </div>
+        <div>
+          <span className="login-pitch-icon"><Icon name="trend" size={14} /></span>
+          <span><b>Live sales</b> on the owner's phone</span>
         </div>
       </div>
-      <SignUp firstRun />
     </div>
   )
 }
