@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
+import { APP_NAME } from '../lib/format.js'
 import { Avatar, Field } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
 
@@ -32,7 +33,7 @@ export default function Login() {
             {isFirstRun ? (
               <>
                 <h1 className="center" style={{ marginBottom: 4 }}>
-                  Set up <strong>{state.settings.business.name}</strong>
+                  Set up <strong>{APP_NAME}</strong>
                 </h1>
                 <p className="center muted small" style={{ margin: '0 0 20px' }}>
                   This first account gets full admin access.
@@ -45,7 +46,7 @@ export default function Login() {
                   {mode === 'signup' ? (
                     <>Create your <strong>account</strong></>
                   ) : (
-                    <>Sign in to <strong>{state.settings.business.name}</strong></>
+                    <>Sign in to <strong>{APP_NAME}</strong></>
                   )}
                 </h1>
 
@@ -97,7 +98,7 @@ function Pitch({ logo, name }) {
     <div className="login-pitch">
       <div className="login-pitch-brand">
         <div className="login-mark">{logo ? <img src={logo} alt="" /> : name.slice(0, 1)}</div>
-        <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{name}</span>
+        <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{APP_NAME}</span>
       </div>
 
       <div className="login-pitch-body">

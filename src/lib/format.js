@@ -1,3 +1,6 @@
+/** The name of the software itself, distinct from the business using it. */
+export const APP_NAME = 'Tareez POS'
+
 /** Formatting, id generation and money helpers. */
 
 export const MAIN_LOCATION = 'MAIN'

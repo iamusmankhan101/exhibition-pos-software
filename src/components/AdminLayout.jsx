@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useApp, useCurrency } from '../lib/store.jsx'
 import { Avatar, Modal, SyncPill } from './ui.jsx'
 import Icon from './Icon.jsx'
-import { formatDate } from '../lib/format.js'
+import { APP_NAME, formatDate } from '../lib/format.js'
 import { filterOrders, lowStockRows, salesSummary } from '../lib/analytics.js'
 
 const SECTIONS = [
@@ -89,8 +89,8 @@ export default function AdminLayout() {
             {logo ? <img src={logo} alt="" /> : state.settings.business.name.slice(0, 1)}
           </div>
           <div style={{ minWidth: 0 }}>
-            <div className="brand-name">{state.settings.business.name}</div>
-            <div className="brand-sub">POS &amp; Inventory</div>
+            <div className="brand-name">{APP_NAME}</div>
+            <div className="brand-sub">{state.settings.business.name}</div>
           </div>
         </div>
 
