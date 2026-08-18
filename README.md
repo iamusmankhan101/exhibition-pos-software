@@ -1,4 +1,4 @@
-# Tareez Exhibition POS & Inventory
+# Tareez POS
 
 A mobile-first point-of-sale and inventory system for selling at exhibitions, pop-ups, stalls and
 trade shows.

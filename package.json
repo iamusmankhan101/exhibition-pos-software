@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Tareez Exhibition POS & Inventory System",
+  "description": "Tareez POS — point of sale and inventory for exhibitions, pop-ups and stalls",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

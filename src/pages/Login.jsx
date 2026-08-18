@@ -33,7 +33,7 @@ export default function Login() {
           {state.settings.business.name}
         </h1>
         <p className="center muted small" style={{ margin: '4px 0 22px' }}>
-          Exhibition POS &amp; Inventory
+          POS &amp; Inventory
         </p>
 
         {isFirstRun ? (

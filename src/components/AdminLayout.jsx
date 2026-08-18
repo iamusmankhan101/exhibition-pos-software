@@ -90,7 +90,7 @@ export default function AdminLayout() {
           </div>
           <div style={{ minWidth: 0 }}>
             <div className="brand-name">{state.settings.business.name}</div>
-            <div className="brand-sub">Exhibition POS</div>
+            <div className="brand-sub">POS &amp; Inventory</div>
           </div>
         </div>
 
