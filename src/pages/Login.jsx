@@ -103,15 +103,15 @@ function Pitch({ logo, name }) {
 
       <div className="login-pitch-body">
         <h2>
-          Take the till <strong>anywhere you sell</strong>.
+          Runs your whole stall. <strong>Even with no internet.</strong>
         </h2>
 
         <div className="login-pitch-stats">
           <div>
-            <b>30–60s</b> from scan to receipt
+            <b>Under a minute</b> from scan to receipt
           </div>
           <div>
-            <b>Offline-first</b> — no signal needed to trade
+            <b>Nothing is lost offline</b> — sales sync when the signal returns
           </div>
         </div>
 
@@ -123,7 +123,7 @@ function Pitch({ logo, name }) {
               <Icon name="box" size={14} />
             </span>
             <span>
-              <b>Stock per stand</b>, never mixed with the warehouse
+              <b>Stock per exhibition</b>, kept apart from the warehouse
             </span>
           </div>
           <div>
@@ -131,7 +131,7 @@ function Pitch({ logo, name }) {
               <Icon name="card" size={14} />
             </span>
             <span>
-              <b>Split and part payments</b>, reconciled per till
+              <b>Cash, card or split</b>, recorded exactly as paid
             </span>
           </div>
           <div>
@@ -139,7 +139,7 @@ function Pitch({ logo, name }) {
               <Icon name="trend" size={14} />
             </span>
             <span>
-              <b>Live sales</b> on the owner&apos;s phone
+              <b>Live sales</b> on the owner&apos;s phone, as they happen
             </span>
           </div>
         </div>
