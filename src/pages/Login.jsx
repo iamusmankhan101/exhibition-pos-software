@@ -8,7 +8,6 @@ import { useNavigate } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
 import { Avatar, Field } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
-import { DEMO_PASSWORD } from '../lib/seed.js'
 
 export default function Login() {
   const { state, actions, user, can } = useApp()
@@ -60,13 +59,6 @@ export default function Login() {
           </>
         )}
 
-        {!isFirstRun && (
-          <p className="center small muted" style={{ marginTop: 18, lineHeight: 1.7 }}>
-            Demo · password <strong>{DEMO_PASSWORD}</strong> for every account
-            <br />
-            PINs — Admin 1111 · Manager 2222 · Ahmed 3333 · Layla 4444
-          </p>
-        )}
       </div>
     </div>
   )
