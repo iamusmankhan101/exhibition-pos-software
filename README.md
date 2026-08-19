@@ -17,8 +17,10 @@ npm install
 npm run dev
 ```
 
-On Node 18 the build fails while generating the service worker — `@rollup/plugin-terser`
-needs the `crypto` global, which Node 18 does not expose to CommonJS.
+On Node 18 the build refuses to start. It used to get most of the way through and then die inside
+`@rollup/plugin-terser` (which needs a `crypto` global Node 18 does not expose to CommonJS), leaving
+a `dist/` that looked complete but had no service worker — which then failed in the browser as a
+service worker stuck on "trying to install". `scripts/check-node.mjs` now stops it up front.
 
 Open http://localhost:5173. The app seeds itself with demo data on first run: 14 products with
 variants, 3 exhibitions, 18 customers and around 90 historical sales.
