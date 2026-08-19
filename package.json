@@ -2,8 +2,11 @@
   "name": "tareez-pos",
   "private": true,
   "version": "1.0.0",
+  "description": "Tareez POS \u2014 point of sale and inventory for exhibitions, pop-ups and stalls",
   "type": "module",
-  "description": "Tareez POS — point of sale and inventory for exhibitions, pop-ups and stalls",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -23,6 +26,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.4.8",
+    "vite-plugin-pwa": "^1.3.0",
     "vitest": "^3.2.7"
   }
 }

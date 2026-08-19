@@ -9,12 +9,16 @@ exhibition reporting — happens as a side effect of taking the payment.
 
 ## Quick start
 
-Requires **Node 20+** (Vite 5 does not run on Node 18).
+Requires **Node 20+**. There is an `.nvmrc`, so:
 
 ```bash
+nvm use
 npm install
 npm run dev
 ```
+
+On Node 18 the build fails while generating the service worker — `@rollup/plugin-terser`
+needs the `crypto` global, which Node 18 does not expose to CommonJS.
 
 Open http://localhost:5173. The app seeds itself with demo data on first run: 14 products with
 variants, 3 exhibitions, 18 customers and around 90 historical sales.
@@ -213,6 +217,29 @@ sells at the same stand, three things need to move server-side:
 
 `pullEverything()` exists for a cold bootstrap but deliberately does not merge into a device that
 already holds unsynced sales — guessing there is how a day's takings goes missing.
+
+## Installable app (PWA)
+
+The build emits a web app manifest and a service worker, so the POS installs to a phone or tablet
+home screen and **cold-starts with no internet**. That is the difference between a salesperson
+reopening a closed tab at a venue and being locked out of a till whose data is sitting intact in
+IndexedDB, unreachable.
+
+`src/sw.js` is written by hand rather than generated, for two reasons. The generator writes its
+template with single-quoted absolute paths, and this project lives under a directory containing an
+apostrophe, which breaks the file it produces. And what a till caches is a correctness question
+worth being explicit about:
+
+- **The whole shell is precached**, including the lazy jsPDF and scanner chunks — otherwise the
+  first offline invoice or barcode scan fails.
+- **Navigations fall back to `index.html`**, so a receipt link (`/r/:id`) still resolves offline.
+- **Supabase is never intercepted.** A failed write already lands in the outbox and retries; a
+  cached response would be worse than none, because it could show a salesperson stock or takings
+  that are not real.
+
+Updates are **offered, not applied**. A till that reloaded itself mid-sale, cart on screen and a
+customer waiting, would be a bug rather than a feature — so a new version waits behind a prompt
+until somebody taps Update.
 
 ## Offline behaviour
 

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppProvider, useApp } from './lib/store.jsx'
 import { Toasts } from './components/ui.jsx'
+import UpdatePrompt from './components/UpdatePrompt.jsx'
 import AdminLayout from './components/AdminLayout.jsx'
 
 import Login from './pages/Login.jsx'
@@ -172,6 +173,7 @@ function Shell() {
         <Route path="*" element={<Navigate to="/admin" replace />} />
       </Routes>
       {state && <Toasts />}
+      <UpdatePrompt />
     </>
   )
 }
