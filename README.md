@@ -204,6 +204,40 @@ determined offline attack — the point is that a PIN which syncs to a server is
 the clear. Accounts that predate the change still carry a plaintext PIN and are still accepted, but
 the hash wins whenever both are present.
 
+### Protecting the login screen
+
+The login screen is the only place an untrusted person is invited to submit whatever they like, over
+and over, so `throttle.js` sits in front of every credential check.
+
+- **Escalating lockouts.** A few attempts pass untouched — people mistype, and a salesperson at a
+  busy stall should not be punished for it — after which each further failure takes the next rung of
+  a ladder. Passwords get four free tries and a ladder up to fifteen minutes; PINs get three and a
+  ladder up to ten. That caps a scripted attack on a four-digit PIN at well under two hundred
+  guesses a day against a ten-thousand-wide space.
+- **A device-wide counter.** Failures also accumulate against the device, so working down the staff
+  list one account at a time is no cheaper than hammering a single one. A successful sign-in clears
+  it: somebody who can actually authenticate is not the attacker it was there for.
+- **Counters that survive a reload.** They live in `localStorage`, because a counter held in React
+  state is cleared by refreshing the page — the first thing anybody trying PINs by hand would do.
+  Winding the device clock backwards does not release a running lock either.
+- **A floor under every failure.** A failed attempt is held open for a fixed minimum. This flattens
+  the gap between "no such account" (instant) and "wrong password" (a PBKDF2 derivation), which
+  otherwise tells an attacker which addresses are real, and caps attempts per second before the
+  ladder has even engaged.
+- **Bounded input.** Passwords cap at 128 characters and addresses at 254, so a megabyte pasted into
+  the box cannot stall the till on the login screen.
+- **Lockouts are logged, individual failures are not.** The audit log holds 800 rows; writing one
+  per failure would let a script wash the day's real history out of it. One row and one admin
+  notification per lockout keeps the signal without the flood.
+- **Account creation is rate limited** separately, so open sign-up plus an approval queue cannot be
+  used to bury an admin under pending accounts.
+
+The honest limit: with Supabase unconfigured this all runs on the attacker's machine, and a
+determined one can clear `localStorage` or read the hashes out of IndexedDB directly. It stops the
+realistic attack — somebody left alone with the tablet, or a script driving the form. Real
+enforcement needs the server, which is why `signIn` prefers Supabase whenever it is configured: its
+own limiter sits behind this one and cannot be reset from the browser.
+
 ### What is not done yet
 
 Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
@@ -296,8 +330,9 @@ This is a complete front end with a local persistence layer, not a deployed mult
 - **Authentication runs on the device.** Passwords are hashed with PBKDF2-SHA256 and a per-user salt,
   never stored in the clear, and `verifyPassword` is the single place to swap for a server call. But
   with no server, the check itself happens client-side, so this is credential hygiene rather than
-  access control — anyone holding the device can read IndexedDB directly. Roles and permissions are
-  the right shape for server enforcement; today they gate the UI.
+  access control — anyone holding the device can read IndexedDB directly. The same applies to the
+  login throttling described above: it is enforced by the browser it is trying to slow down. Roles
+  and permissions are the right shape for server enforcement; today they gate the UI.
 
 ## Licence
 

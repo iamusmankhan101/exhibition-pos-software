@@ -37,6 +37,13 @@ import {
   verifyPin,
 } from './auth.js'
 import { getSupabase } from './supabase.js'
+import {
+  blockedBy,
+  clearAttempts,
+  lockMessage,
+  recordFailure,
+  settleFailure,
+} from './throttle.js'
 
 const STATE_KEY = 'state'
 const SESSION_KEY = 'tareez.session'
@@ -381,6 +388,52 @@ export function AppProvider({ children }) {
       }
     }
 
+    /**
+     * Refuses an attempt that is still inside a lockout.
+     *
+     * Called before the credential is even looked at, so a locked-out attacker
+     * gets no signal about whether the guess was close.
+     */
+    const throttleGuard = (kind, id) => {
+      const blocked = blockedBy(kind, id)
+      if (blocked) throw new Error(lockMessage(blocked))
+    }
+
+    /**
+     * Books a failed attempt and produces the message the form will show.
+     *
+     * Only lockouts reach the audit log, never individual failures: the log is
+     * capped at 800 rows, so a script could otherwise wash the day's real
+     * history out of it simply by guessing. One row per lockout keeps the
+     * signal — somebody is attacking this device — without the flood.
+     */
+    const noteFailure = (kind, id, account, message) => {
+      const status = recordFailure(kind, id)
+      if (status.blocked) {
+        const who = account ? `${account.name} (${account.email || 'no email'})` : String(id)
+        setState((current) => {
+          const draft = account
+            ? withAuditAs(current, account, 'Sign-in locked', `${status.failures} failed attempts · device ${deviceCode}`)
+            : withAudit(
+                current,
+                'Sign-in locked',
+                `${status.failures} failed attempts for ${who} · device ${deviceCode}`,
+                'session',
+                String(id),
+              )
+          return withNotification(
+            draft,
+            'security',
+            'Sign-in temporarily locked',
+            `${status.failures} failed ${kind === 'pin' ? 'PIN' : 'password'} attempts for ${who} on device ${deviceCode}.`,
+            'warn',
+          )
+        })
+        return lockMessage(status)
+      }
+      return message
+    }
+
     const removeProducts = (productIds) => {
       let removed = 0
       setState((current) => {
@@ -453,10 +506,19 @@ export function AppProvider({ children }) {
        */
       async login(userId, pin) {
         guard()
+        // Four digits is the weakest credential in the building, so the lockout
+        // check comes first and a wrong one is charged for.
+        throttleGuard('pin', userId)
+        const startedAt = Date.now()
         const account = stateRef.current.users.find((entry) => entry.id === userId)
         if (!account) throw new Error('User not found.')
         if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
-        if (!(await verifyPin(pin, account))) throw new Error('Incorrect PIN.')
+        if (!(await verifyPin(pin, account))) {
+          const message = noteFailure('pin', userId, account, 'Incorrect PIN.')
+          await settleFailure(startedAt)
+          throw new Error(message)
+        }
+        clearAttempts('pin', userId)
         return api.startSession(account, 'PIN')
       },
 
@@ -472,6 +534,16 @@ export function AppProvider({ children }) {
       async signIn(email, password) {
         guard()
 
+        const address = normaliseEmail(email)
+        // Keyed on the address, so locking one account out does not lock out
+        // the colleague standing behind them — while the device-wide counter
+        // inside the throttle still catches somebody working down a list. An
+        // empty box gets its own bucket rather than sharing one with whatever
+        // else normalises to '', and the form watches the same key.
+        const attemptKey = address || 'anonymous'
+        throttleGuard('password', attemptKey)
+        const startedAt = Date.now()
+
         if (supabaseConfigured) {
           if (!navigator.onLine) {
             throw new Error(
@@ -480,12 +552,17 @@ export function AppProvider({ children }) {
           }
           const sb = await getSupabase()
           const { data, error } = await sb.auth.signInWithPassword({
-            email: normaliseEmail(email),
+            email: address,
             password,
           })
           // Supabase's own message is deliberately vague about which half was
-          // wrong, which is the behaviour we want anyway.
-          if (error) throw new Error(error.message)
+          // wrong, which is the behaviour we want anyway. Its server-side
+          // limiter is the real backstop; this one only spares the round trip.
+          if (error) {
+            const message = noteFailure('password', attemptKey, null, error.message)
+            await settleFailure(startedAt)
+            throw new Error(message)
+          }
 
           const account = await api.refreshIdentity(data.user)
           if (!account) {
@@ -502,6 +579,7 @@ export function AppProvider({ children }) {
           if (!account.active) {
             throw new Error('This account is awaiting approval or has been deactivated.')
           }
+          clearAttempts('password', attemptKey)
           return api.startSession(account, 'Password')
         }
 
@@ -509,10 +587,17 @@ export function AppProvider({ children }) {
           (entry) => normaliseEmail(entry.email) === normaliseEmail(email),
         )
         // Same message either way so the form cannot be used to probe for
-        // which email addresses exist.
+        // which email addresses exist. `settleFailure` finishes the job: an
+        // unknown address would otherwise fail instantly while a real one
+        // spends a PBKDF2 derivation first, and that gap is the answer.
         const ok = account ? await verifyPassword(password, account) : false
-        if (!ok) throw new Error('That email and password do not match.')
+        if (!ok) {
+          const message = noteFailure('password', attemptKey, account, 'That email and password do not match.')
+          await settleFailure(startedAt)
+          throw new Error(message)
+        }
         if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
+        clearAttempts('password', attemptKey)
         return api.startSession(account, 'Password')
       },
 
@@ -583,6 +668,11 @@ export function AppProvider({ children }) {
         if (!isFirstAccount && !current.settings.signup?.enabled) {
           throw new Error('Sign-ups are turned off. Ask an admin to create your account.')
         }
+        // Open sign-up plus an approval queue is an invitation to bury the
+        // admin under a thousand pending accounts. The first account is exempt:
+        // there is nobody to attack yet, and locking someone out of setting the
+        // system up would be its own denial of service.
+        if (!isFirstAccount) throttleGuard('signup', 'this-device')
         if (!name?.trim()) throw new Error('Enter your name.')
 
         const emailError = emailProblem(email)
@@ -659,6 +749,11 @@ export function AppProvider({ children }) {
           }
           return withOutbox(next, 'user.signup', account.id, { id: account.id, email: account.email })
         })
+
+        // Counted after the account exists, so a rejected password or a taken
+        // address costs nothing — the limit is on accounts created, not on
+        // attempts made.
+        if (!isFirstAccount) recordFailure('signup', 'this-device')
 
         if (needsApproval) {
           return { account, pending: true }

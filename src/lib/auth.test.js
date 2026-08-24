@@ -5,6 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_PASSWORD_LENGTH,
   createCredential,
   createPinCredential,
   emailProblem,
@@ -34,6 +35,17 @@ describe('passwords', () => {
     const a = await createCredential('tareez2026')
     const b = await createCredential('tareez2026')
     expect(a.passwordHash).not.toBe(b.passwordHash)
+  })
+
+  it('treats an absurdly long guess as wrong, not as a crash', async () => {
+    const account = await createCredential('tareez2026')
+    // A megabyte in the password box must not stall the till on the login
+    // screen, and it must fail the same way any other wrong password does.
+    expect(await verifyPassword('x'.repeat(1_000_000), account)).toBe(false)
+  })
+
+  it('will not let anyone register a password beyond the cap', () => {
+    expect(passwordProblem(`a1${'x'.repeat(MAX_PASSWORD_LENGTH)}`)).toMatch(/at most/)
   })
 
   it('refuses an account with no credential rather than letting anyone in', async () => {

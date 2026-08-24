@@ -7,8 +7,45 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
 import { APP_NAME } from '../lib/format.js'
+import { MAX_PASSWORD_LENGTH, normaliseEmail } from '../lib/auth.js'
+import { blockedBy, lockMessage } from '../lib/throttle.js'
 import { Avatar, Field } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
+
+/**
+ * Watches the lockout on one credential and re-reads it every half second.
+ *
+ * The store refuses a locked attempt on its own — this only makes the refusal
+ * visible before somebody keeps typing into a form that will not accept them,
+ * and lets the wait count itself down instead of sitting on a stale number.
+ */
+function useLockout(kind, id) {
+  const [status, setStatus] = useState(null)
+
+  useEffect(() => {
+    if (!id) {
+      setStatus(null)
+      return undefined
+    }
+    const tick = () => setStatus(blockedBy(kind, id))
+    tick()
+    const timer = setInterval(tick, 500)
+    return () => clearInterval(timer)
+  }, [kind, id])
+
+  return status
+}
+
+/** The red line under a form: a live lockout outranks whatever error preceded it. */
+function FormError({ lock, error }) {
+  const message = lock ? lockMessage(lock) : error
+  if (!message) return null
+  return (
+    <div className="small" style={{ color: 'var(--danger)' }} role="alert">
+      {message}
+    </div>
+  )
+}
 
 export default function Login() {
   const { state, actions, user, can } = useApp()
@@ -158,8 +195,14 @@ function SignIn() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
+  // Locks follow the address, so they appear as soon as the attacker types the
+  // one they have been guessing at — and a device-wide lock shows for any.
+  const lock = useLockout('password', normaliseEmail(email) || 'anonymous')
+  const locked = Boolean(lock)
+
   const submit = async (event) => {
     event.preventDefault()
+    if (locked) return
     setError('')
     setBusy(true)
     try {
@@ -179,6 +222,7 @@ function SignIn() {
           value={email}
           autoComplete="username"
           autoFocus
+          maxLength={254}
           onChange={(event) => setEmail(event.target.value)}
           placeholder="you@business.com"
         />
@@ -191,6 +235,7 @@ function SignIn() {
             type={showPassword ? 'text' : 'password'}
             value={password}
             autoComplete="current-password"
+            maxLength={MAX_PASSWORD_LENGTH}
             onChange={(event) => setPassword(event.target.value)}
             placeholder="••••••••"
             style={{ paddingRight: 44 }}
@@ -207,14 +252,10 @@ function SignIn() {
         </div>
       </Field>
 
-      {error && (
-        <div className="small" style={{ color: 'var(--danger)' }}>
-          {error}
-        </div>
-      )}
+      <FormError lock={lock} error={error} />
 
-      <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy}>
-        {busy ? 'Checking…' : 'Sign in'}
+      <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy || locked}>
+        {locked ? 'Locked' : busy ? 'Checking…' : 'Sign in'}
       </button>
     </form>
   )
@@ -229,10 +270,15 @@ function SignUp({ onDone, firstRun = false }) {
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState(null)
 
+  // Creating the first account is never rate limited — see `signUp`.
+  const lock = useLockout('signup', firstRun ? null : 'this-device')
+  const locked = Boolean(lock)
+
   const patch = (fields) => setDraft((current) => ({ ...current, ...fields }))
 
   const submit = async (event) => {
     event.preventDefault()
+    if (locked) return
     setError('')
     if (draft.password !== draft.confirm) {
       setError('The two passwords do not match.')
@@ -289,6 +335,7 @@ function SignUp({ onDone, firstRun = false }) {
           value={draft.name}
           autoFocus
           autoComplete="name"
+          maxLength={80}
           onChange={(event) => patch({ name: event.target.value })}
           placeholder="Amina Hassan"
         />
@@ -300,6 +347,7 @@ function SignUp({ onDone, firstRun = false }) {
           type="email"
           value={draft.email}
           autoComplete="username"
+          maxLength={254}
           onChange={(event) => patch({ email: event.target.value })}
           placeholder="you@business.com"
         />
@@ -311,6 +359,7 @@ function SignUp({ onDone, firstRun = false }) {
           type="password"
           value={draft.password}
           autoComplete="new-password"
+          maxLength={MAX_PASSWORD_LENGTH}
           onChange={(event) => patch({ password: event.target.value })}
         />
       </Field>
@@ -321,15 +370,12 @@ function SignUp({ onDone, firstRun = false }) {
           type="password"
           value={draft.confirm}
           autoComplete="new-password"
+          maxLength={MAX_PASSWORD_LENGTH}
           onChange={(event) => patch({ confirm: event.target.value })}
         />
       </Field>
 
-      {error && (
-        <div className="small" style={{ color: 'var(--danger)' }}>
-          {error}
-        </div>
-      )}
+      <FormError lock={lock} error={error} />
 
       {!firstRun && (
         <p className="small muted" style={{ margin: 0 }}>
@@ -338,8 +384,8 @@ function SignUp({ onDone, firstRun = false }) {
         </p>
       )}
 
-      <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy}>
-        {busy ? 'Creating…' : firstRun ? 'Create owner account' : 'Create account'}
+      <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy || locked}>
+        {locked ? 'Locked' : busy ? 'Creating…' : firstRun ? 'Create owner account' : 'Create account'}
       </button>
     </>
   )
@@ -362,20 +408,31 @@ function PinPad() {
   const [selected, setSelected] = useState(null)
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const staff = state.users.filter((entry) => entry.active)
 
+  const lock = useLockout('pin', selected?.id)
+  const locked = Boolean(lock)
+
   const submit = async (value) => {
+    setBusy(true)
     try {
       await actions.login(selected.id, value)
     } catch (err) {
       setError(err.message)
       setPin('')
       if (navigator.vibrate) navigator.vibrate([40, 60, 40])
+    } finally {
+      setBusy(false)
     }
   }
 
   const press = (digit) => {
+    // Ignored while locked or while the previous guess is still being checked —
+    // otherwise the keypad happily queues attempts faster than they resolve,
+    // which is exactly the rate the throttle exists to stop.
+    if (locked || busy) return
     setError('')
     const next = `${pin}${digit}`.slice(0, 4)
     setPin(next)
@@ -437,21 +494,21 @@ function PinPad() {
             ))}
           </div>
 
-          {error && (
-            <p className="center small" style={{ color: 'var(--danger)', marginTop: 0, marginBottom: 12 }}>
-              {error}
+          {(lock || error) && (
+            <p className="center small" style={{ color: 'var(--danger)', marginTop: 0, marginBottom: 12 }} role="alert">
+              {lock ? lockMessage(lock) : error}
             </p>
           )}
 
           <div className="keypad">
             {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
-              <button key={digit} onClick={() => press(digit)}>
+              <button key={digit} onClick={() => press(digit)} disabled={locked || busy}>
                 {digit}
               </button>
             ))}
-            <button onClick={() => setPin('')}>C</button>
-            <button onClick={() => press(0)}>0</button>
-            <button onClick={() => setPin((current) => current.slice(0, -1))}>⌫</button>
+            <button onClick={() => setPin('')} disabled={locked || busy}>C</button>
+            <button onClick={() => press(0)} disabled={locked || busy}>0</button>
+            <button onClick={() => setPin((current) => current.slice(0, -1))} disabled={locked || busy}>⌫</button>
           </div>
         </>
       )}

@@ -14,6 +14,16 @@
 const ITERATIONS = 150000
 const KEY_BITS = 256
 
+/**
+ * Upper bound on anything we will hash.
+ *
+ * PBKDF2's cost is set by the iteration count, not the input, but the input is
+ * attacker-controlled and this device is doing the work: a megabyte pasted into
+ * the password box would stall the till on the login screen. Long enough that
+ * no real passphrase touches it.
+ */
+export const MAX_PASSWORD_LENGTH = 128
+
 const toHex = (buffer) =>
   [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 
@@ -25,6 +35,9 @@ export function randomSalt() {
 }
 
 export async function hashPassword(password, saltHex) {
+  if (String(password ?? '').length > MAX_PASSWORD_LENGTH) {
+    throw new Error(`Passwords are limited to ${MAX_PASSWORD_LENGTH} characters.`)
+  }
   const salt = fromHex(saltHex)
   const key = await crypto.subtle.importKey(
     'raw',
@@ -57,6 +70,9 @@ function safeEqual(a = '', b = '') {
 
 export async function verifyPassword(password, user) {
   if (!user?.passwordHash || !user?.passwordSalt) return false
+  // An over-long guess is simply wrong, not an exception: throwing here would
+  // hand the form a different failure shape than a bad password gets.
+  if (String(password ?? '').length > MAX_PASSWORD_LENGTH) return false
   const candidate = await hashPassword(password, user.passwordSalt)
   return safeEqual(candidate, user.passwordHash)
 }
@@ -86,7 +102,7 @@ export async function createPinCredential(pin) {
  */
 export async function verifyPin(pin, account) {
   const entered = String(pin || '')
-  if (!entered) return false
+  if (!entered || entered.length > MAX_PASSWORD_LENGTH) return false
   if (account?.pinHash && account?.pinSalt) {
     return safeEqual(await hashPassword(entered, account.pinSalt), account.pinHash)
   }
@@ -97,6 +113,7 @@ export async function verifyPin(pin, account) {
 /** Shared rules so sign-up and password changes agree on what is acceptable. */
 export function passwordProblem(password) {
   if (!password || password.length < 8) return 'Use at least 8 characters.'
+  if (password.length > MAX_PASSWORD_LENGTH) return `Use at most ${MAX_PASSWORD_LENGTH} characters.`
   if (!/[a-zA-Z]/.test(password)) return 'Include at least one letter.'
   if (!/[0-9]/.test(password)) return 'Include at least one number.'
   return null
@@ -104,6 +121,9 @@ export function passwordProblem(password) {
 
 export function emailProblem(email) {
   if (!email?.trim()) return 'An email address is required.'
+  // 254 is the longest address SMTP will carry; anything beyond it is a paste
+  // attack on the form, not a typo.
+  if (email.trim().length > 254) return 'That email address is too long.'
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return 'That does not look like an email address.'
   return null
 }

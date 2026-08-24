@@ -663,8 +663,10 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
   padding: 15px 0; font-size: 19px; font-weight: 650; background: var(--surface);
   border: 1px solid var(--line); border-radius: var(--r-md); cursor: pointer;
 }
-.keypad button:hover { background: var(--surface-2); }
-.keypad button:active { background: var(--surface-3); }
+.keypad button:hover:not(:disabled) { background: var(--surface-2); }
+.keypad button:active:not(:disabled) { background: var(--surface-3); }
+/* Locked out: the pad stays in place so the countdown above it has context. */
+.keypad button:disabled { opacity: 0.45; cursor: not-allowed; }
 .pin-dots { display: flex; gap: 12px; justify-content: center; margin: 6px 0 14px; }
 .pin-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #d8dce3; }
 .pin-dot.filled { background: var(--brand); border-color: var(--brand); }
