@@ -273,13 +273,18 @@ export default function POS() {
     <div className="pos">
       <div className="pos-left">
         <header className="pos-head">
-          <div className="brand-mark" style={{ width: 34, height: 34, fontSize: 15 }}>
-            {state.settings.business.logo ? (
-              <img src={state.settings.business.logo} alt="" />
-            ) : (
-              state.settings.business.name.slice(0, 1)
-            )}
-          </div>
+          {state.settings.business.logo ? (
+            <img
+              className="brand-logo"
+              style={{ height: 26 }}
+              src={state.settings.business.logo}
+              alt={state.settings.business.name}
+            />
+          ) : (
+            <div className="brand-mark" style={{ width: 34, height: 34, fontSize: 15 }}>
+              {state.settings.business.name.slice(0, 1)}
+            </div>
+          )}
           <div className="grow" style={{ minWidth: 0 }}>
             <div
               style={{

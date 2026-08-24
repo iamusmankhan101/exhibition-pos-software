@@ -67,6 +67,18 @@ export default function Login() {
 
         <div className="login-form-pane">
           <div className="login-card">
+            {/* Phone-only branding: below 900px the pitch pane is hidden, and
+                without this the login screen carries no mark at all. */}
+            {logo ? (
+              <img
+                className="brand-logo login-brand-logo"
+                src={logo}
+                alt={state.settings.business.name}
+              />
+            ) : (
+              <div className="login-logo">{state.settings.business.name.slice(0, 1)}</div>
+            )}
+
             {isFirstRun ? (
               <>
                 <h1 className="center" style={{ marginBottom: 4 }}>
@@ -134,7 +146,11 @@ function Pitch({ logo, name }) {
   return (
     <div className="login-pitch">
       <div className="login-pitch-brand">
-        <div className="login-mark">{logo ? <img src={logo} alt="" /> : name.slice(0, 1)}</div>
+        {logo ? (
+          <img className="brand-logo" style={{ height: 26 }} src={logo} alt={name} />
+        ) : (
+          <div className="login-mark">{name.slice(0, 1)}</div>
+        )}
         <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{APP_NAME}</span>
       </div>
 

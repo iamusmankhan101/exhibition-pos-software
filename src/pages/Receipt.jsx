@@ -126,9 +126,22 @@ export default function Receipt() {
 
         <article className="receipt">
           {design.showLogo !== false && (
-            <div className="receipt-logo" style={design.accent ? { background: design.accent } : undefined}>
-              {data.business.logo ? <img src={data.business.logo} alt="" /> : data.business.name?.slice(0, 1)}
-            </div>
+            /* The accent fill is for the letter fallback only — behind a logo
+               it is a coloured box the logo has to fight. */
+            data.business.logo ? (
+              <img
+                className="brand-logo receipt-brand-logo"
+                src={data.business.logo}
+                alt={data.business.name}
+              />
+            ) : (
+              <div
+                className="receipt-logo"
+                style={design.accent ? { background: design.accent } : undefined}
+              >
+                {data.business.name?.slice(0, 1)}
+              </div>
+            )
           )}
           <h1>{data.business.name}</h1>
           {data.business.tagline && <p className="tagline">{data.business.tagline}</p>}

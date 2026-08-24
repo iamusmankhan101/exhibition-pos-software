@@ -47,6 +47,24 @@ export default defineConfig({
       },
     }),
   ],
+  build: {
+    /*
+     * Force the brand logo to be inlined as a data URL.
+     *
+     * `settings.business.logo` is a data URL everywhere it is used: jsPDF draws
+     * it into the invoice, an exported backup carries it, and it syncs to
+     * Supabase inside the settings blob. Emitted as a file it would be a
+     * relative path instead — the invoice logo would silently vanish, and a
+     * backup restored on another build would point at a hash that no longer
+     * exists.
+     *
+     * A function rather than a raised `assetsInlineLimit` number, so this is the
+     * only asset the rule touches; everything else keeps Vite's default. (Vite 5
+     * has no `?inline` query — that landed in 6 — so the decision belongs here.)
+     */
+    assetsInlineLimit: (filePath) => (filePath.includes('tareez-logo') ? true : undefined),
+  },
+
   server: {
     host: true,
     port: 5173,

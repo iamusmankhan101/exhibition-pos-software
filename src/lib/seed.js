@@ -12,6 +12,16 @@ import {
 } from './domain.js'
 import { createCredential } from './auth.js'
 import { DEFAULT_ROLES } from './permissions.js'
+/**
+ * The Tareez wordmark.
+ *
+ * This arrives as a data URL, not a file path — `assetsInlineLimit` in
+ * `vite.config.js` pins that, and the comment there explains why the rest of
+ * the app cannot work with anything else.
+ */
+import TAREEZ_LOGO from '../assets/tareez-logo.png'
+
+export { TAREEZ_LOGO }
 
 /** Every demo account uses this password; the PIN is the quick way in. */
 export const DEMO_PASSWORD = 'tareez2026'
@@ -26,8 +36,11 @@ export const DEFAULT_SETTINGS = {
     website: 'tareez.com',
     address: '18 Marylebone Lane, London W1U 2NF',
     vatNumber: 'GB 341 8827 55',
-    logo: null,
+    logo: TAREEZ_LOGO,
   },
+  // A fresh install starts with the logo already in place, so the one-time
+  // backfill in `migrate` has nothing left to do.
+  logoSeeded: true,
   currency: 'GBP',
   currencySymbol: '£',
   taxEnabled: true,

@@ -94,11 +94,16 @@ export function EmptyState({ title, children, action }) {
 }
 
 /** Square image tile with a deterministic colour fallback. */
-export function Thumb({ src, name, className = 'cart-thumb', style, children }) {
+export function Thumb({ src, name, className = 'cart-thumb', style, children, fit = 'cover' }) {
   if (src) {
     return (
-      <div className={className} style={style}>
-        <img src={src} alt={name} />
+      <div
+        className={className}
+        style={fit === 'contain' ? { background: '#fff', ...style } : style}
+      >
+        {/* A contained thumb shows the whole image — a logo preview that crops
+            is a preview of the wrong thing. */}
+        <img src={src} alt={name} style={fit === 'contain' ? { objectFit: 'contain', padding: 6 } : undefined} />
         {children}
       </div>
     )
@@ -226,9 +231,19 @@ export function SyncPill() {
   )
 }
 
-/** Resizes an uploaded image to a data URL small enough to store inline. */
-export function ImagePicker({ value, onChange, name }) {
+/**
+ * Resizes an uploaded image to a data URL small enough to store inline.
+ *
+ * Two shapes, because the two things this picks are not alike. A product photo
+ * is cropped square and written as JPEG: the grid is a grid, and photographs
+ * neither need transparency nor survive PNG's file size. A logo is not croppable
+ * — a wide wordmark loses its first and last letters to a square crop — so
+ * `fit="contain"` keeps the whole image inside the box at its own proportions
+ * and writes PNG, which is the only one of the two that keeps an alpha channel.
+ */
+export function ImagePicker({ value, onChange, name, fit = 'cover' }) {
   const [busy, setBusy] = useState(false)
+  const contain = fit === 'contain'
 
   const handleFile = (file) => {
     if (!file) return
@@ -239,14 +254,24 @@ export function ImagePicker({ value, onChange, name }) {
       image.onload = () => {
         const size = 320
         const canvas = document.createElement('canvas')
-        canvas.width = size
-        canvas.height = size
-        const ctx = canvas.getContext('2d')
-        const scale = Math.max(size / image.width, size / image.height)
+        const scale = contain
+          ? Math.min(size / image.width, size / image.height, 1)
+          : Math.max(size / image.width, size / image.height)
         const width = image.width * scale
         const height = image.height * scale
-        ctx.drawImage(image, (size - width) / 2, (size - height) / 2, width, height)
-        onChange(canvas.toDataURL('image/jpeg', 0.78))
+        // Contained: the canvas is the image, so nothing is cropped and no
+        // background is invented behind a transparent logo.
+        canvas.width = contain ? Math.round(width) : size
+        canvas.height = contain ? Math.round(height) : size
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(
+          image,
+          (canvas.width - width) / 2,
+          (canvas.height - height) / 2,
+          width,
+          height,
+        )
+        onChange(contain ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.78))
         setBusy(false)
       }
       image.onerror = () => setBusy(false)
@@ -261,6 +286,7 @@ export function ImagePicker({ value, onChange, name }) {
         src={value}
         name={name}
         className="cart-thumb"
+        fit={fit}
         style={{ width: 62, height: 62, borderRadius: 14, fontSize: 18 }}
       />
       <div className="stack-sm grow">

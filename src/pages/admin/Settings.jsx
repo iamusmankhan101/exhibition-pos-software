@@ -88,9 +88,12 @@ export default function Settings() {
         <div className="grid grid-2">
           <div className="card col">
             <div className="card-title">Business identity</div>
+            {/* Contained, not cropped: a logo is a fixed shape, and a wide
+                wordmark loses its outer letters to a square crop. */}
             <ImagePicker
               value={draft.business.logo}
               name={draft.business.name}
+              fit="contain"
               onChange={(logo) => patchBusiness({ logo })}
             />
             <Field label="Trading name">
@@ -1335,26 +1338,33 @@ function InvoicePreview({ settings }) {
       <div style={{ padding: 16 }}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
           {design.showLogo !== false && (
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                borderRadius: 8,
-                background: design.accent,
-                color: '#fff',
-                display: 'grid',
-                placeItems: 'center',
-                fontWeight: 700,
-                overflow: 'hidden',
-                flexShrink: 0,
-              }}
-            >
-              {settings.business.logo ? (
-                <img src={settings.business.logo} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : (
-                settings.business.name.slice(0, 1)
-              )}
-            </div>
+            /* Mirrors what the PDF actually draws: the logo at its own
+               proportions, or the accent square behind the letter fallback. */
+            settings.business.logo ? (
+              <img
+                className="brand-logo"
+                src={settings.business.logo}
+                alt={settings.business.name}
+                style={{ height: 26, maxWidth: 96, flexShrink: 0 }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 8,
+                  background: design.accent,
+                  color: '#fff',
+                  display: 'grid',
+                  placeItems: 'center',
+                  fontWeight: 700,
+                  overflow: 'hidden',
+                  flexShrink: 0,
+                }}
+              >
+                {settings.business.name.slice(0, 1)}
+              </div>
+            )
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 13 }}>{settings.business.name}</div>

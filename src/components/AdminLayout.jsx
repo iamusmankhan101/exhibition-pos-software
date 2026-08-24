@@ -84,14 +84,21 @@ export default function AdminLayout() {
       {drawer && <div className="scrim" onClick={() => setDrawer(false)} />}
 
       <aside className={`sidebar ${drawer ? 'open' : ''}`}>
+        {/* The wordmark says the name; setting it in type beside itself only
+            said it twice. The letter tile is still the fallback for an account
+            that has cleared its logo. */}
         <div className="sidebar-brand">
-          <div className="brand-mark">
-            {logo ? <img src={logo} alt="" /> : state.settings.business.name.slice(0, 1)}
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div className="brand-name">{APP_NAME}</div>
-            <div className="brand-sub">{state.settings.business.name}</div>
-          </div>
+          {logo ? (
+            <img className="brand-logo" src={logo} alt={state.settings.business.name} />
+          ) : (
+            <>
+              <div className="brand-mark">{state.settings.business.name.slice(0, 1)}</div>
+              <div style={{ minWidth: 0 }}>
+                <div className="brand-name">{APP_NAME}</div>
+                <div className="brand-sub">{state.settings.business.name}</div>
+              </div>
+            </>
+          )}
         </div>
 
         <button className="side-search" onClick={() => navigate('/admin/sales')}>

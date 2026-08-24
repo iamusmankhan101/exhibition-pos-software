@@ -278,7 +278,28 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
   display: grid; place-items: center; font-weight: 700; font-size: 16px; flex-shrink: 0; overflow: hidden;
   box-shadow: 0 2px 6px rgba(2, 27, 141, 0.3);
 }
-.brand-mark img { width: 100%; height: 100%; object-fit: cover; }
+
+/* ------------------------------------------------------------ brand logo */
+
+/*
+ * The logo is an image, not a tile.
+ *
+ * The square brand-coloured tiles elsewhere in this file hold the single-letter
+ * fallback and nothing else. An earlier attempt to make them accommodate a logo
+ * went wrong twice over: a `fit-content` box around a percentage-height image is
+ * not reliably measured, and each tile's own `img` rule sat later in this file
+ * at equal specificity, so they went on forcing `object-fit: cover` — which on a
+ * wide short box crops the top and bottom off the wordmark. Those `img` rules
+ * are gone with them; nothing puts an image in those tiles any more.
+ *
+ * An `<img>` with an explicit height and `width: auto` has neither problem. It
+ * keeps its own proportions in any container, with nothing for a layout engine
+ * to interpret. No chip, no border, no fill: the wordmark is black on
+ * transparency and every surface it lands on is already light.
+ */
+.brand-logo {
+  display: block; height: 30px; width: auto; max-width: 100%; object-fit: contain;
+}
 .brand-name { font-weight: 700; font-size: 17px; line-height: 1.15; letter-spacing: -0.02em; }
 .brand-sub { font-size: 11.5px; color: var(--muted-2); }
 
@@ -636,12 +657,14 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
   display: grid; place-items: center; font-size: 24px; font-weight: 700; margin: 0 auto 14px; overflow: hidden;
   box-shadow: 0 6px 18px rgba(2, 27, 141, 0.32);
 }
-.login-logo img { width: 100%; height: 100%; object-fit: cover; }
+/* Above 900px the pitch pane is showing and already carries the wordmark;
+   below it the pitch is hidden and this is the only branding on the screen. */
+.login-brand-logo { height: 42px; margin: 0 auto 18px; }
+@media (min-width: 901px) { .login-logo, .login-brand-logo { display: none; } }
 .login-mark {
   width: 34px; height: 34px; border-radius: 10px; background: var(--brand); color: #fff;
   display: grid; place-items: center; font-size: 16px; font-weight: 700; overflow: hidden; flex-shrink: 0;
 }
-.login-mark img { width: 100%; height: 100%; object-fit: cover; }
 .login-alt {
   margin-top: 18px; padding: 13px; width: 100%; text-align: center;
   border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface);
@@ -679,7 +702,7 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
   padding: 26px 24px 30px; box-shadow: var(--shadow-md); border: 1px solid var(--line);
 }
 .receipt-logo { width: 54px; height: 54px; border-radius: 15px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 21px; margin: 0 auto 12px; overflow: hidden; }
-.receipt-logo img { width: 100%; height: 100%; object-fit: cover; }
+.receipt-brand-logo { height: 40px; margin: 0 auto 12px; }
 .receipt h1 { font-size: 19px; text-align: center; }
 .receipt .tagline { text-align: center; font-size: 12.5px; color: #6c7280; margin: 3px 0 0; }
 .receipt hr { border: none; border-top: 1px dashed #dfe3e9; margin: 18px 0; }

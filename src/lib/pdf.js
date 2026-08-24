@@ -47,15 +47,34 @@ export async function buildInvoicePdf(data, qrDataUrl) {
   doc.setFillColor(...accent)
   doc.rect(0, 0, pageW, 4, 'F')
 
+  /*
+   * The logo box, drawn to the logo's own proportions.
+   *
+   * The old fixed 18×18 assumed a square mark and squashed anything else — the
+   * Tareez wordmark is roughly 2:1 and came out as a smear. `getImageProperties`
+   * gives the real dimensions, so the box follows the logo instead. Passing its
+   * `fileType` rather than a hard-coded 'JPEG' is tidiness rather than a fix:
+   * jsPDF sniffs the format out of the data URL either way.
+   */
+  const LOGO_MAX_H = 14
+  const LOGO_MAX_W = 34
+  let logoWidth = 0
+
   if (design.showLogo !== false && data.business.logo) {
     try {
-      doc.addImage(data.business.logo, 'JPEG', margin, y, 18, 18)
+      const image = doc.getImageProperties(data.business.logo)
+      const scale = Math.min(LOGO_MAX_W / image.width, LOGO_MAX_H / image.height)
+      const width = image.width * scale
+      const height = image.height * scale
+      // Vertically centred against the block of business text beside it.
+      doc.addImage(data.business.logo, image.fileType, margin, y + (18 - height) / 2, width, height)
+      logoWidth = width
     } catch {
       /* a broken data URL should never stop the invoice printing */
     }
   }
 
-  const textLeft = design.showLogo !== false && data.business.logo ? margin + 23 : margin
+  const textLeft = logoWidth ? margin + logoWidth + 5 : margin
 
   doc.setTextColor(20, 23, 28)
   doc.setFont('helvetica', 'bold')

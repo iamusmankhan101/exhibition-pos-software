@@ -78,14 +78,29 @@ function loadSession() {
   }
 }
 
+/**
+ * Decides whether a device that predates the bundled logo should get it.
+ *
+ * Only once, tracked by `logoSeeded`. Without the flag the spread below would
+ * hand the default back every time the app loaded, so an admin who removed the
+ * logo on purpose would watch it reappear on the next refresh.
+ */
+function seedLogo(settings) {
+  const business = { ...DEFAULT_SETTINGS.business, ...settings?.business }
+  if (settings?.logoSeeded || business.logo) return { business, logoSeeded: true }
+  return { business: { ...business, logo: DEFAULT_SETTINGS.business.logo }, logoSeeded: true }
+}
+
 /** Fills in fields added after a state blob was first written. */
 function migrate(state) {
+  const { business, logoSeeded } = seedLogo(state.settings)
   return {
     ...state,
     settings: {
       ...DEFAULT_SETTINGS,
       ...state.settings,
-      business: { ...DEFAULT_SETTINGS.business, ...state.settings?.business },
+      logoSeeded,
+      business,
       invoiceDesign: { ...DEFAULT_SETTINGS.invoiceDesign, ...state.settings?.invoiceDesign },
       receiptChannels: { ...DEFAULT_SETTINGS.receiptChannels, ...state.settings?.receiptChannels },
     },

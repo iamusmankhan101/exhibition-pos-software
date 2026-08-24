@@ -120,6 +120,23 @@ attach it to an email or WhatsApp message.
 **Invoice design** — accent colour, paper size and which fields appear (logo, customer contact,
 exhibition, salesperson, VAT breakdown, QR, terms), with a live preview and a downloadable sample.
 
+**Branding** — the Tareez wordmark ships as the default `settings.business.logo` and appears on the
+login screen, the admin sidebar, the POS header, the on-screen receipt and the invoice PDF. It is a
+data URL, not a bundled file path, because that is the only form that survives everywhere the logo
+travels: jsPDF draws it into the invoice, an exported backup carries it, and it syncs to Supabase
+inside the settings blob. `vite.config.js` pins that with a targeted `assetsInlineLimit`.
+
+Replacing it in Settings → Business identity replaces it everywhere. The logo picker fits rather
+than crops and writes PNG, so a wide wordmark keeps its outer letters and a transparent background
+stays transparent; product photos still get the square JPEG crop, which is what a product grid
+wants.
+
+A logo renders as a plain `<img class="brand-logo">` with an explicit height and `width: auto`,
+never inside the square brand-coloured tiles — those hold the single-letter fallback and nothing
+else. An image with a fixed height keeps its own proportions in any container, with nothing for a
+layout engine to interpret. In the sidebar the wordmark stands alone: it already says the name, and
+setting it in type beside itself only said it twice.
+
 **Reporting** — dashboard with sales trend, sales by hour, sales by category, payment split and
 staff ranking; sales, product, category, inventory, payment, discount, returns, staff and customer
 reports, each exportable to CSV,
