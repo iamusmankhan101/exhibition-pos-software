@@ -145,13 +145,18 @@ export default function Login() {
 function Pitch({ logo, name }) {
   return (
     <div className="login-pitch">
+      {/* Wordmark alone, as in the sidebar. The name set in type beside a
+          logo that already reads "tareez" just said it twice. The letter tile
+          still needs the name spelled out, so it keeps the label. */}
       <div className="login-pitch-brand">
         {logo ? (
-          <img className="brand-logo" style={{ height: 26 }} src={logo} alt={name} />
+          <img className="brand-logo" src={logo} alt={name} />
         ) : (
-          <div className="login-mark">{name.slice(0, 1)}</div>
+          <>
+            <div className="login-mark">{name.slice(0, 1)}</div>
+            <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{APP_NAME}</span>
+          </>
         )}
-        <span style={{ fontWeight: 750, fontSize: 17, letterSpacing: '-0.02em' }}>{APP_NAME}</span>
       </div>
 
       <div className="login-pitch-body">
