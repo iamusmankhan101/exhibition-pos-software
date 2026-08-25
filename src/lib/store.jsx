@@ -48,6 +48,7 @@ import {
 const STATE_KEY = 'state'
 const SESSION_KEY = 'tareez.session'
 const DEVICE_KEY = 'tareez.device'
+const PIN_ROSTER_KEY = 'tareez.pinRoster'
 
 const AppContext = createContext(null)
 
@@ -84,6 +85,43 @@ function clearSession() {
     localStorage.removeItem(SESSION_KEY)
   } catch {
     /* private mode — there was nothing to clear */
+  }
+}
+
+/**
+ * The accounts that have signed in on this device, by id.
+ *
+ * The staff list itself is the whole company — `refreshIdentity` pulls every
+ * row because the admin screens need them — so it is the wrong thing to offer
+ * on the PIN keypad. This is the right thing: the people who actually work this
+ * till, each added the first time they sign in here with their password.
+ *
+ * Deliberately in localStorage rather than in `state`. State syncs, and this
+ * must not: which staff use the Dubai till is not a fact about the other tills.
+ */
+function loadPinRoster() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PIN_ROSTER_KEY))
+    return Array.isArray(stored) ? stored.filter((id) => typeof id === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function savePinRoster(ids) {
+  try {
+    localStorage.setItem(PIN_ROSTER_KEY, JSON.stringify(ids))
+  } catch {
+    /* private mode — the keypad simply stays empty on this device */
+  }
+}
+
+/** Forgets every account on this device, for when their records are gone. */
+function clearPinRoster() {
+  try {
+    localStorage.removeItem(PIN_ROSTER_KEY)
+  } catch {
+    /* nothing stored to remove */
   }
 }
 
@@ -127,6 +165,7 @@ function migrate(state) {
 export function AppProvider({ children }) {
   const [state, setStateRaw] = useState(null)
   const [session, setSession] = useState(loadSession)
+  const [pinRoster, setPinRoster] = useState(loadPinRoster)
   const [online, setOnline] = useState(navigator.onLine)
   const [syncing, setSyncing] = useState(false)
   const [toasts, setToasts] = useState([])
@@ -155,6 +194,9 @@ export function AppProvider({ children }) {
           await idbSet(STATE_KEY, fresh).catch(() => {})
           clearSession()
           setSession({})
+          // The demo accounts are gone, so the ids remembered here name nobody.
+          clearPinRoster()
+          setPinRoster([])
           return fresh
         }
         return stored ? migrate(stored) : await buildSeedState()
@@ -529,6 +571,15 @@ export function AppProvider({ children }) {
         setState((current) =>
           withAuditAs(current, account, 'Signed in', `${method} · device ${deviceCodeFrom(deviceId)}`),
         )
+        // Signing in here is what puts somebody on this till's keypad. Done for
+        // PIN sign-in too, which is a no-op for anyone already listed and quietly
+        // repairs a roster that lost them.
+        setPinRoster((current) => {
+          if (current.includes(account.id)) return current
+          const next = [...current, account.id]
+          savePinRoster(next)
+          return next
+        })
         const preferred =
           stateRef.current.exhibitions.find(
             (exhibition) => exhibition.status === 'Active' && exhibition.staffIds.includes(account.id),
@@ -1629,6 +1680,8 @@ export function AppProvider({ children }) {
         const fresh = await buildSeedState()
         setStateRaw(fresh)
         persist(fresh)
+        clearPinRoster()
+        setPinRoster([])
         updateSession({ userId: null, exhibitionId: null })
         toast('All data cleared', 'success')
       },
@@ -1691,10 +1744,11 @@ export function AppProvider({ children }) {
       pendingSync: state?.outbox.filter((entry) => entry.status === 'pending').length || 0,
       toasts,
       actions,
+      pinRoster,
       roles: state?.roles || DEFAULT_ROLES,
       can: (permission) => userCan(user, state?.roles, permission),
     }),
-    [state, session, user, activeExhibition, online, syncing, deviceId, deviceCode, currentDevice, toasts, actions],
+    [state, session, user, activeExhibition, online, syncing, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

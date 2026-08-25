@@ -431,13 +431,18 @@ function SignUp({ onDone, firstRun = false }) {
 /* ------------------------------------------------------------------ PIN */
 
 function PinPad() {
-  const { state, actions } = useApp()
+  const { state, actions, pinRoster } = useApp()
   const [selected, setSelected] = useState(null)
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const staff = state.users.filter((entry) => entry.active)
+  // Only the people who have signed in on this device, never the whole staff
+  // list. `refreshIdentity` caches every account so the admin screens can work
+  // offline, and putting that on an unauthenticated screen would publish the
+  // payroll to anyone who picks the till up — while burying the two or three
+  // names that actually belong to this stall.
+  const staff = state.users.filter((entry) => entry.active && pinRoster.includes(entry.id))
 
   const lock = useLockout('pin', selected?.id)
   const locked = Boolean(lock)
@@ -488,7 +493,8 @@ function PinPad() {
             ))}
             {staff.length === 0 && (
               <p className="small muted center" style={{ margin: 0 }}>
-                No active accounts yet.
+                Nobody has signed in on this device yet. Sign in once with your email and
+                password, and your PIN will work here from then on.
               </p>
             )}
           </div>
