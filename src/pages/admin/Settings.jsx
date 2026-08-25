@@ -445,7 +445,7 @@ export default function Settings() {
               onChange={(event) => importFile(event.target.files?.[0])}
             />
             <button className="btn btn-danger" onClick={() => setResetting(true)}>
-              Reset to demo data
+              Erase all data
             </button>
             <p className="small muted" style={{ margin: 0 }}>
               Data is stored in this browser (IndexedDB) and shared live between tabs on this machine. Take a backup
@@ -471,11 +471,11 @@ export default function Settings() {
       <Confirm
         open={resetting}
         key="reset"
-        title="Reset everything to demo data?"
-        message="All products, sales, customers and settings on this device will be replaced with a fresh demo dataset."
-        confirmLabel="Reset"
+        title="Erase everything on this device?"
+        message="All accounts, products, sales, customers and settings on this device will be deleted, and the app returns to first-run setup. This cannot be undone."
+        confirmLabel="Erase"
         danger
-        onConfirm={() => actions.resetDemoData()}
+        onConfirm={() => actions.resetAllData()}
         onClose={() => setResetting(false)}
       />
     </div>
@@ -1298,13 +1298,13 @@ function sampleInvoice(settings) {
     design: settings.invoiceDesign,
     invoiceNo: `${settings.invoicePrefix}-260816-A1042`,
     createdAt: new Date().toISOString(),
-    exhibitionName: 'London Fashion Exhibition',
-    salespersonName: 'Ahmed Khan',
-    customerName: 'Amina Hassan',
-    customerContact: '+44 7700 900123 · amina@example.com',
+    exhibitionName: 'Example Exhibition',
+    salespersonName: 'Salesperson name',
+    customerName: 'Customer name',
+    customerContact: '+44 7700 900000 · customer@example.com',
     items: [
-      { name: 'Black Silk Scarf', variant: 'Black / One Size', quantity: 2, unitPrice: 68 },
-      { name: 'Linen Wrap Abaya', variant: 'Stone / M', quantity: 1, unitPrice: 210 },
+      { name: 'Example product', variant: 'Black / One Size', quantity: 2, unitPrice: 68 },
+      { name: 'Second example product', variant: 'Stone / M', quantity: 1, unitPrice: 210 },
     ],
     subtotal: 346,
     discountAmount: 34.6,

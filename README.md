@@ -22,23 +22,16 @@ On Node 18 the build refuses to start. It used to get most of the way through an
 a `dist/` that looked complete but had no service worker — which then failed in the browser as a
 service worker stuck on "trying to install". `scripts/check-node.mjs` now stops it up front.
 
-Open http://localhost:5173. The app seeds itself with demo data on first run: 14 products with
-variants, 3 exhibitions, 18 customers and around 90 historical sales.
+Open http://localhost:5173. The app starts empty — no accounts, no catalogue, no sales history —
+so the login screen asks you to create the owner account first. That first account gets full admin
+access; add the rest of the staff, each with their own PIN, from **Settings → Users**.
 
-### Demo sign-ins
+### Signing in
 
-Sign in with an email and the password `tareez2026`, or use the Staff PIN tab for fast switching on
-a shared device.
+Sign in with an email and password, or use the Staff PIN tab for fast switching on a shared device.
 
-| User | Email | Role | PIN |
-| --- | --- | --- | --- |
-| Ali Rahman | ali@tareez.com | Admin | `1111` |
-| Sarah Bennett | sarah@tareez.com | Manager | `2222` |
-| Ahmed Khan | ahmed@tareez.com | Salesperson | `3333` |
-| Layla Hassan | layla@tareez.com | Salesperson | `4444` |
-
-On a completely empty database the login screen asks you to create the owner account instead, and
-that first account gets full admin access.
+**Settings → Data → Erase all data** puts the app back to this first-run state. Take a backup first
+— it cannot be undone.
 
 Other scripts:
 
@@ -317,7 +310,7 @@ src/
     sync.js        offline queue with a pluggable transport adapter
     receipt.js     receipt encoding, QR, WhatsApp/SMS/email delivery
     idb.js         IndexedDB wrapper
-    seed.js        demo dataset
+    seed.js        default settings, roles and the empty starting dataset
     supabase.js    optional Supabase client, loaded on demand
     supabaseAdapter.js  outbox → Supabase, and the cold bootstrap pull
     *.test.js      rule tests and the acceptance run

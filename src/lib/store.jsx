@@ -1599,12 +1599,12 @@ export function AppProvider({ children }) {
       },
 
       /* data */
-      async resetDemoData() {
+      async resetAllData() {
         const fresh = await buildSeedState()
         setStateRaw(fresh)
         persist(fresh)
-        updateSession({ exhibitionId: fresh.exhibitions[0].id })
-        toast('Demo data restored', 'success')
+        updateSession({ userId: null, exhibitionId: null })
+        toast('All data cleared', 'success')
       },
 
       exportBackup() {
