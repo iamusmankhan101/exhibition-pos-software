@@ -323,6 +323,29 @@ supabase/
 `domain.js` holds every rule as a pure `state → state` function, which is why the same code can be
 exercised by the UI, the seeder and tests without a browser.
 
+## Deploying
+
+The site is a static build, deployed on Vercel from `main`.
+
+`vercel.json` rewrites every unmatched path to `index.html`. Vercel matches the filesystem first, so
+`/assets/*`, `/sw.js` and the icons still resolve to real files; without the rewrite a reload on
+`/login` or `/pos` returns Vercel's 404 page instead of the app.
+
+**Set the Supabase variables in the Vercel project, not just locally.** `.env.local` is gitignored,
+so a build that cannot see these two produces a local-only bundle: `isConfigured` is false, the app
+falls back to per-browser IndexedDB, and a device with no local accounts shows the first-run
+"Set up Tareez POS" form instead of the sign-in tabs — with no way to reach accounts that already
+exist in Supabase.
+
+```
+VITE_SUPABASE_URL
+VITE_SUPABASE_ANON_KEY
+```
+
+Vite inlines them at build time, so changing either needs a redeploy, not just a restart. To check a
+deployed build, search its main asset for your project URL — if `supabase.co` does not appear in it,
+the variables were missing when it was built.
+
 ## Current limitations
 
 This is a complete front end with a local persistence layer, not a deployed multi-device system.
