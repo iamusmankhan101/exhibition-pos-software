@@ -108,9 +108,25 @@ export const DEMO_ACCOUNT_EMAILS = [
   'layla@tareez.com',
 ]
 
+/**
+ * The names those accounts carried.
+ *
+ * Matched as well as the emails because an admin could have edited a demo
+ * account's address on the old build — the dataset is still the demo one, and
+ * an email-only check would leave it in place.
+ */
+export const DEMO_ACCOUNT_NAMES = [
+  'ali rahman',
+  'sarah bennett',
+  'ahmed khan',
+  'layla hassan',
+]
+
 /** True if `state` came from the demo seed rather than from anyone's real use. */
 export function isDemoDataset(state) {
-  return (state?.users || []).some((user) =>
-    DEMO_ACCOUNT_EMAILS.includes(String(user?.email || '').toLowerCase()),
+  return (state?.users || []).some(
+    (user) =>
+      DEMO_ACCOUNT_EMAILS.includes(String(user?.email || '').toLowerCase()) ||
+      DEMO_ACCOUNT_NAMES.includes(String(user?.name || '').trim().toLowerCase()),
   )
 }
