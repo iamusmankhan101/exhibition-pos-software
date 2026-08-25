@@ -1,52 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useApp, useCurrency } from '../lib/store.jsx'
 import { Avatar, Modal, SyncPill } from './ui.jsx'
 import Icon from './Icon.jsx'
 import { APP_NAME, formatDate } from '../lib/format.js'
 import { filterOrders, lowStockRows, salesSummary } from '../lib/analytics.js'
-
-/**
- * Where we are in the session history, so the top-bar arrows can say so.
- *
- * They were never broken — `navigate(-1)` on the first entry in the tab is
- * simply a no-op, and landing straight on the dashboard (sign-in redirects
- * there with `replace`, so it leaves no entry behind) is exactly that case. The
- * buttons looked live and did nothing, which reads as broken. Now they go grey
- * when there is nowhere to go.
- *
- * React Router stamps an `idx` onto each history entry, which is the only
- * reliable way to know this — `history.length` counts forward entries too. If
- * the stamp is ever missing we leave both arrows enabled rather than disabling
- * a button that would have worked.
- */
-function useHistoryPosition() {
-  const location = useLocation()
-  const navigationType = useNavigationType()
-  const [position, setPosition] = useState(() => {
-    const idx = window.history.state?.idx
-    return { idx, furthest: idx }
-  })
-
-  useEffect(() => {
-    const idx = window.history.state?.idx
-    setPosition((current) => ({
-      idx,
-      // A fresh push discards whatever was ahead, so the forward arrow has to
-      // go dead again; a POP is just movement within what already exists.
-      furthest:
-        navigationType === 'PUSH' || typeof current.furthest !== 'number'
-          ? idx
-          : Math.max(current.furthest, idx ?? 0),
-    }))
-  }, [location, navigationType])
-
-  const known = typeof position.idx === 'number'
-  return {
-    canGoBack: !known || position.idx > 0,
-    canGoForward: !known || position.idx < position.furthest,
-  }
-}
 
 const SECTIONS = [
   {
@@ -87,7 +45,6 @@ export default function AdminLayout() {
   const currency = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
-  const { canGoBack, canGoForward } = useHistoryPosition()
   const [drawer, setDrawer] = useState(false)
   const [bell, setBell] = useState(false)
 
@@ -119,6 +76,23 @@ export default function AdminLayout() {
   const current = sections
     .flatMap((section) => section.items)
     .find((item) => (item.end ? item.to === location.pathname : location.pathname.startsWith(item.to)))
+
+  /*
+   * The top-bar arrows step through the sidebar in order rather than replaying
+   * browser history, so every section is reachable by clicking one repeatedly —
+   * including pages this visit has not opened, which is what history could
+   * never do.
+   *
+   * Built from `sections`, so it is already filtered by permission: a
+   * salesperson steps through the four pages they can see, not past seven
+   * locked doors. Point of sale is left out on purpose. It renders its own
+   * full-screen chrome outside this layout, so paging into it would strand
+   * somebody on a screen with no arrows to page back out of.
+   */
+  const pager = sections.flatMap((section) => section.items).filter((item) => item.to.startsWith('/admin'))
+  const here = pager.indexOf(current)
+  const previousPage = here > 0 ? pager[here - 1] : null
+  const nextPage = here >= 0 && here < pager.length - 1 ? pager[here + 1] : null
 
   const logo = state.settings.business.logo
 
@@ -232,17 +206,17 @@ export default function AdminLayout() {
           <div className="nav-arrows desktop-only">
             <button
               className="icon-btn"
-              onClick={() => navigate(-1)}
-              disabled={!canGoBack}
-              title={canGoBack ? 'Back' : 'Nothing to go back to'}
+              onClick={() => previousPage && navigate(previousPage.to)}
+              disabled={!previousPage}
+              title={previousPage ? `Previous: ${previousPage.label}` : 'This is the first page'}
             >
               <Icon name="arrowLeft" size={16} />
             </button>
             <button
               className="icon-btn"
-              onClick={() => navigate(1)}
-              disabled={!canGoForward}
-              title={canGoForward ? 'Forward' : 'Nothing to go forward to'}
+              onClick={() => nextPage && navigate(nextPage.to)}
+              disabled={!nextPage}
+              title={nextPage ? `Next: ${nextPage.label}` : 'This is the last page'}
             >
               <Icon name="arrowRight" size={16} />
             </button>
