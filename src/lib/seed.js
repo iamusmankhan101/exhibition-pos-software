@@ -94,3 +94,23 @@ export async function buildSeedState() {
     seededAt: new Date().toISOString(),
   }
 }
+
+/**
+ * The accounts the old demo dataset shipped with.
+ *
+ * Kept only so `migrate` can recognise a browser still holding that dataset and
+ * clear it. Nothing creates these any more — see the boot path in `store.jsx`.
+ */
+export const DEMO_ACCOUNT_EMAILS = [
+  'ali@tareez.com',
+  'sarah@tareez.com',
+  'ahmed@tareez.com',
+  'layla@tareez.com',
+]
+
+/** True if `state` came from the demo seed rather than from anyone's real use. */
+export function isDemoDataset(state) {
+  return (state?.users || []).some((user) =>
+    DEMO_ACCOUNT_EMAILS.includes(String(user?.email || '').toLowerCase()),
+  )
+}

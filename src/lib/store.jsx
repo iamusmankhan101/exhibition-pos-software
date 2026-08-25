@@ -22,7 +22,7 @@ import {
   settlePayment,
   transferStock,
 } from './domain.js'
-import { DEFAULT_SETTINGS, buildSeedState } from './seed.js'
+import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
 import { createSupabaseAdapter } from './supabaseAdapter.js'
@@ -75,6 +75,15 @@ function loadSession() {
     return JSON.parse(localStorage.getItem(SESSION_KEY)) || {}
   } catch {
     return {}
+  }
+}
+
+/** Drops the remembered sign-in, for when the account it names no longer exists. */
+function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY)
+  } catch {
+    /* private mode — there was nothing to clear */
   }
 }
 
@@ -135,7 +144,21 @@ export function AppProvider({ children }) {
   useEffect(() => {
     let cancelled = false
     idbGet(STATE_KEY)
-      .then(async (stored) => (stored ? migrate(stored) : await buildSeedState()))
+      .then(async (stored) => {
+        // A browser that opened an earlier build still holds the demo dataset it
+        // seeded on that first visit, and boot never re-seeds over stored data —
+        // so the demo staff outlive the build that made them unless they are
+        // cleared here. Written straight back so the wipe survives a reload
+        // whether or not anything else changes.
+        if (stored && isDemoDataset(stored)) {
+          const fresh = await buildSeedState()
+          await idbSet(STATE_KEY, fresh).catch(() => {})
+          clearSession()
+          setSession({})
+          return fresh
+        }
+        return stored ? migrate(stored) : await buildSeedState()
+      })
       .then((next) => {
         if (!cancelled) setStateRaw(next)
       })
@@ -161,6 +184,9 @@ export function AppProvider({ children }) {
     channel.onmessage = (event) => {
       // Another device/tab on this machine changed the shared dataset.
       if (event.data?.origin === deviceId) return
+      // A tab still running an older build would otherwise push the demo
+      // dataset back over the wipe above.
+      if (isDemoDataset(event.data?.state)) return
       if (event.data?.state) setStateRaw(migrate(event.data.state))
     }
     return () => {
