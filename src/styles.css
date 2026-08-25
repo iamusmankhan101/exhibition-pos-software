@@ -768,3 +768,11 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
   max-width: calc(100vw - 32px);
 }
 .update-bar .btn { border-color: transparent; }
+
+/* The top-bar back/forward arrows when the session history has nowhere to go.
+   Without this they look identical to live ones and read as broken. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.icon-btn:disabled:hover { background: var(--surface); color: var(--muted); }

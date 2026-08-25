@@ -1,10 +1,52 @@
-import { useMemo, useState } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router-dom'
 import { useApp, useCurrency } from '../lib/store.jsx'
 import { Avatar, Modal, SyncPill } from './ui.jsx'
 import Icon from './Icon.jsx'
 import { APP_NAME, formatDate } from '../lib/format.js'
 import { filterOrders, lowStockRows, salesSummary } from '../lib/analytics.js'
+
+/**
+ * Where we are in the session history, so the top-bar arrows can say so.
+ *
+ * They were never broken — `navigate(-1)` on the first entry in the tab is
+ * simply a no-op, and landing straight on the dashboard (sign-in redirects
+ * there with `replace`, so it leaves no entry behind) is exactly that case. The
+ * buttons looked live and did nothing, which reads as broken. Now they go grey
+ * when there is nowhere to go.
+ *
+ * React Router stamps an `idx` onto each history entry, which is the only
+ * reliable way to know this — `history.length` counts forward entries too. If
+ * the stamp is ever missing we leave both arrows enabled rather than disabling
+ * a button that would have worked.
+ */
+function useHistoryPosition() {
+  const location = useLocation()
+  const navigationType = useNavigationType()
+  const [position, setPosition] = useState(() => {
+    const idx = window.history.state?.idx
+    return { idx, furthest: idx }
+  })
+
+  useEffect(() => {
+    const idx = window.history.state?.idx
+    setPosition((current) => ({
+      idx,
+      // A fresh push discards whatever was ahead, so the forward arrow has to
+      // go dead again; a POP is just movement within what already exists.
+      furthest:
+        navigationType === 'PUSH' || typeof current.furthest !== 'number'
+          ? idx
+          : Math.max(current.furthest, idx ?? 0),
+    }))
+  }, [location, navigationType])
+
+  const known = typeof position.idx === 'number'
+  return {
+    canGoBack: !known || position.idx > 0,
+    canGoForward: !known || position.idx < position.furthest,
+  }
+}
 
 const SECTIONS = [
   {
@@ -45,6 +87,7 @@ export default function AdminLayout() {
   const currency = useCurrency()
   const navigate = useNavigate()
   const location = useLocation()
+  const { canGoBack, canGoForward } = useHistoryPosition()
   const [drawer, setDrawer] = useState(false)
   const [bell, setBell] = useState(false)
 
@@ -187,10 +230,20 @@ export default function AdminLayout() {
           </button>
 
           <div className="nav-arrows desktop-only">
-            <button className="icon-btn" onClick={() => navigate(-1)} title="Back">
+            <button
+              className="icon-btn"
+              onClick={() => navigate(-1)}
+              disabled={!canGoBack}
+              title={canGoBack ? 'Back' : 'Nothing to go back to'}
+            >
               <Icon name="arrowLeft" size={16} />
             </button>
-            <button className="icon-btn" onClick={() => navigate(1)} title="Forward">
+            <button
+              className="icon-btn"
+              onClick={() => navigate(1)}
+              disabled={!canGoForward}
+              title={canGoForward ? 'Forward' : 'Nothing to go forward to'}
+            >
               <Icon name="arrowRight" size={16} />
             </button>
           </div>
