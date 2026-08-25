@@ -9,6 +9,7 @@ import { useApp } from '../lib/store.jsx'
 import { APP_NAME } from '../lib/format.js'
 import { MAX_PASSWORD_LENGTH, normaliseEmail } from '../lib/auth.js'
 import { blockedBy, lockMessage } from '../lib/throttle.js'
+import { isConfigured as supabaseConfigured } from '../lib/supabase.js'
 import { Avatar, Field } from '../components/ui.jsx'
 import Icon from '../components/Icon.jsx'
 
@@ -51,7 +52,12 @@ export default function Login() {
   const { state, actions, user, can } = useApp()
   const navigate = useNavigate()
 
-  const isFirstRun = state.users.length === 0
+  // An empty staff list only means "nobody has set this up yet" on a local-only
+  // build. With a backend configured the accounts live in Supabase, so a device
+  // that has simply never signed in — a new till, or one whose old dataset was
+  // cleared — still has real accounts to sign in against, and must not be
+  // pushed into creating a second owner instead.
+  const isFirstRun = state.users.length === 0 && !supabaseConfigured
   const [mode, setMode] = useState(isFirstRun ? 'signup' : 'signin')
 
   useEffect(() => {
