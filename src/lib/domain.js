@@ -97,6 +97,29 @@ export function transferStock(state, { variantId, fromLocation, toLocation, quan
 
 /* ------------------------------------------------------------ product help */
 
+/**
+ * Every category on offer: the managed list plus anything a product still
+ * carries. The union matters because settings stay on the device while products
+ * sync — a category typed on another till must not vanish from the dropdown.
+ */
+export function productCategories(state) {
+  const names = new Map()
+  const add = (value) => {
+    const clean = String(value || '').trim()
+    if (clean && !names.has(clean.toLowerCase())) names.set(clean.toLowerCase(), clean)
+  }
+  for (const name of state.settings?.categories || []) add(name)
+  for (const product of state.products) add(product.category)
+  return [...names.values()].sort((a, b) => a.localeCompare(b))
+}
+
+/** How many products sit in a category — the guard against deleting a live one. */
+export function categoryUsage(state, name) {
+  const needle = String(name || '').trim().toLowerCase()
+  return state.products.filter((product) => String(product.category || '').trim().toLowerCase() === needle)
+    .length
+}
+
 export function allVariants(state) {
   return state.products.flatMap((product) =>
     product.variants.map((variant) => ({ product, variant })),

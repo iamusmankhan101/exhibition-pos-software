@@ -936,6 +936,33 @@ export function AppProvider({ children }) {
       deleteProduct: (productId) => removeProducts([productId]),
       deleteProducts: removeProducts,
 
+      /**
+       * Adds a category to the managed list and hands back the name to store on
+       * the product. An existing name wins on case, so "scarves" typed at the
+       * till never becomes a second entry beside "Scarves".
+       */
+      addCategory(name) {
+        const clean = String(name || '').trim()
+        if (!clean) return ''
+        const existing = (stateRef.current?.settings.categories || []).find(
+          (entry) => entry.toLowerCase() === clean.toLowerCase(),
+        )
+        if (existing) return existing
+        setState((current) =>
+          withAudit(
+            {
+              ...current,
+              settings: { ...current.settings, categories: [...(current.settings.categories || []), clean] },
+            },
+            'Added category',
+            clean,
+            'settings',
+            'categories',
+          ),
+        )
+        return clean
+      },
+
       /* inventory */
       transferStock({ variantId, fromLocation, toLocation, quantity }) {
         setState((current) => {

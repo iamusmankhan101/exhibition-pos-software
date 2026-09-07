@@ -4,6 +4,7 @@ import { Avatar, Confirm, EmptyState, Field, ImagePicker, Modal, Tabs } from '..
 import Icon from '../../components/Icon.jsx'
 import { formatDate, uid } from '../../lib/format.js'
 import { ALL_PERMISSIONS, PERMISSION_GROUPS } from '../../lib/permissions.js'
+import { categoryUsage, productCategories } from '../../lib/domain.js'
 
 const CURRENCIES = [
   ['GBP', '£'],
@@ -19,6 +20,7 @@ export default function Settings() {
   const [tab, setTab] = useState('business')
   const [draft, setDraft] = useState(state.settings)
   const [resetting, setResetting] = useState(false)
+  const [newCategory, setNewCategory] = useState('')
   const [pdfBusy, setPdfBusy] = useState(false)
   const fileRef = useRef(null)
 
@@ -48,6 +50,25 @@ export default function Settings() {
   const toggleChannel = (key) =>
     patch({ receiptChannels: { ...draft.receiptChannels, [key]: !draft.receiptChannels[key] } })
 
+  // Categories are listed as the union of the managed list and whatever the
+  // catalogue still uses, so nothing a product carries can go missing here.
+  const categories = productCategories({ ...state, settings: draft })
+
+  const addCategory = () => {
+    const clean = newCategory.trim()
+    if (!clean) return
+    if (categories.some((entry) => entry.toLowerCase() === clean.toLowerCase())) {
+      actions.toast('That category already exists', 'warn')
+      setNewCategory('')
+      return
+    }
+    patch({ categories: [...(draft.categories || []), clean] })
+    setNewCategory('')
+  }
+
+  const removeCategory = (name) =>
+    patch({ categories: (draft.categories || []).filter((entry) => entry !== name) })
+
   const toggleMethod = (method) =>
     patch({
       paymentMethods: draft.paymentMethods.includes(method)
@@ -76,6 +97,7 @@ export default function Settings() {
         tabs={[
           { value: 'business', label: 'Business' },
           { value: 'sales', label: 'Sales rules' },
+          { value: 'catalogue', label: 'Catalogue' },
           { value: 'receipts', label: 'Receipts' },
           { value: 'invoice', label: 'Invoice design' },
           { value: 'roles', label: 'Roles & access' },
@@ -278,6 +300,68 @@ export default function Settings() {
                 </label>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'catalogue' && (
+        <div className="grid grid-2">
+          <div className="card col">
+            <div className="card-title">Product categories</div>
+            <p className="small muted" style={{ margin: 0 }}>
+              Categories group the catalogue and drive the filters on Products and Inventory. Staff can
+              also add one straight from the product editor.
+            </p>
+
+            <div className="row" style={{ gap: 6 }}>
+              <input
+                className="input grow"
+                value={newCategory}
+                placeholder="e.g. Scarves"
+                onChange={(event) => setNewCategory(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    addCategory()
+                  }
+                }}
+              />
+              <button className="btn" disabled={!newCategory.trim()} onClick={addCategory}>
+                Add
+              </button>
+            </div>
+
+            {categories.length === 0 ? (
+              <p className="small muted" style={{ margin: 0 }}>
+                No categories yet — add the first one above.
+              </p>
+            ) : (
+              <div className="stack-sm">
+                {categories.map((name) => {
+                  const used = categoryUsage(state, name)
+                  return (
+                    <div key={name} className="row-between" style={{ padding: '4px 0' }}>
+                      <span style={{ fontWeight: 600 }}>{name}</span>
+                      <div className="row" style={{ gap: 8 }}>
+                        <span className="small muted">
+                          {used} product{used === 1 ? '' : 's'}
+                        </span>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          // A category in use cannot be removed: the products
+                          // carrying it would put it straight back.
+                          disabled={used > 0}
+                          title={used > 0 ? `Used by ${used} product${used === 1 ? '' : 's'}` : 'Remove'}
+                          onClick={() => removeCategory(name)}
+                        >
+                          <Icon name="trash" size={15} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

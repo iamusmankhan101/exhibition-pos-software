@@ -3,7 +3,7 @@ import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Confirm, EmptyState, Field, Modal, Tabs } from '../../components/ui.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { MAIN_LOCATION, formatDate, variantLabel } from '../../lib/format.js'
-import { allVariants, getStock } from '../../lib/domain.js'
+import { allVariants, getStock, productCategories } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
 
 export default function Inventory() {
@@ -17,12 +17,15 @@ export default function Inventory() {
   const currency = useCurrency()
   const [tab, setTab] = useState('levels')
   const [query, setQuery] = useState('')
+  const [category, setCategory] = useState('All')
   const [transfers, setTransfers] = useState({})
   const [adjusting, setAdjusting] = useState(null)
   const [direction, setDirection] = useState('toExhibition')
   const [deletingMovements, setDeletingMovements] = useState(null)
   const [deletingStock, setDeletingStock] = useState(null)
   const canDelete = can('records.delete')
+
+  const categories = useMemo(() => ['All', ...productCategories(state)], [state])
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -34,6 +37,7 @@ export default function Inventory() {
         main: getStock(state, MAIN_LOCATION, variant.id),
         exhibition: target ? getStock(state, target.id, variant.id) : 0,
       }))
+      .filter((row) => category === 'All' || row.product.category === category)
       .filter(
         (row) =>
           !needle ||
@@ -42,7 +46,7 @@ export default function Inventory() {
           String(row.variant.barcode).includes(needle) ||
           row.variant.color.toLowerCase().includes(needle),
       )
-  }, [state, query, target])
+  }, [state, query, category, target])
 
   const queued = Object.entries(transfers).filter(([, quantity]) => Number(quantity) > 0)
 
@@ -96,6 +100,7 @@ export default function Inventory() {
 
   const stockColumns = [
     { label: 'Product', value: (row) => row.product.name },
+    { label: 'Category', value: (row) => row.product.category },
     { label: 'Variant', value: (row) => variantLabel(row.variant) },
     { label: 'SKU', value: (row) => row.variant.sku },
     { label: 'Barcode', value: (row) => row.variant.barcode },
@@ -125,6 +130,16 @@ export default function Inventory() {
         />
         {tab === 'levels' && (
           <>
+            <select
+              className="select"
+              style={{ width: 170 }}
+              value={category}
+              onChange={(event) => setCategory(event.target.value)}
+            >
+              {categories.map((entry) => (
+                <option key={entry}>{entry}</option>
+              ))}
+            </select>
             <select
               className="select"
               style={{ width: 210 }}

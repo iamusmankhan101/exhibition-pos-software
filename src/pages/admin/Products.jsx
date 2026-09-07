@@ -5,8 +5,11 @@ import { EmptyState, Field, ImagePicker, Modal, StatusBadge, Thumb } from '../..
 import Icon from '../../components/Icon.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { MAIN_LOCATION, uid, variantLabel } from '../../lib/format.js'
-import { getStock, hasExhibitionPrice } from '../../lib/domain.js'
+import { getStock, hasExhibitionPrice, productCategories } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
+
+/** Sentinel option value — never a real category name. */
+const NEW_CATEGORY = '\u0000new'
 
 const blankVariant = () => ({
   id: uid('var'),
@@ -44,10 +47,7 @@ export default function Products() {
   const canDelete = can('records.delete')
   const canStock = can('stock.adjust')
 
-  const categories = useMemo(
-    () => ['All', ...new Set(state.products.map((product) => product.category).filter(Boolean))],
-    [state.products],
-  )
+  const categories = useMemo(() => ['All', ...productCategories(state)], [state])
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -107,7 +107,11 @@ export default function Products() {
         </button>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && state.products.length > 0 ? (
+        <EmptyState title="No products match">
+          Nothing in {category === 'All' ? 'the catalogue' : category} matches that search.
+        </EmptyState>
+      ) : rows.length === 0 ? (
         <EmptyState
           title="No products yet"
           action={
@@ -493,13 +497,29 @@ function StockModal({ product, onClose }) {
 /* ---------------------------------------------------------------- editor */
 
 function ProductEditor({ product, onClose, onSave, onDelete }) {
-  const { state, activeExhibition, can } = useApp()
+  const { state, activeExhibition, actions, can } = useApp()
   const [draft, setDraft] = useState(product)
   const [stock, setStock] = useState({})
   const [error, setError] = useState('')
   const isNew = !state.products.some((entry) => entry.id === product.id)
   const canStock = can('stock.adjust')
   const locations = useMemo(() => stockLocations(activeExhibition), [activeExhibition])
+  const categories = useMemo(() => productCategories(state), [state])
+  const [adding, setAdding] = useState(false)
+  const [newCategory, setNewCategory] = useState('')
+
+  const cancelCategory = () => {
+    setAdding(false)
+    setNewCategory('')
+  }
+
+  /** Adds the typed category to the managed list and selects it. */
+  const commitCategory = () => {
+    const name = actions.addCategory(newCategory)
+    if (!name) return setError('Give the category a name.')
+    patch({ category: name })
+    return cancelCategory()
+  }
 
   const patch = (fields) => setDraft((current) => ({ ...current, ...fields }))
 
@@ -615,17 +635,46 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
 
       <div className="grid grid-3" style={{ gap: 10 }}>
         <Field label="Category">
-          <input
-            className="input"
-            list="category-list"
-            value={draft.category}
-            onChange={(event) => patch({ category: event.target.value })}
-          />
-          <datalist id="category-list">
-            {[...new Set(state.products.map((entry) => entry.category))].map((entry) => (
-              <option key={entry} value={entry} />
-            ))}
-          </datalist>
+          {adding ? (
+            <div className="row" style={{ gap: 6 }}>
+              <input
+                className="input grow"
+                autoFocus
+                value={newCategory}
+                placeholder="e.g. Scarves"
+                onChange={(event) => setNewCategory(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    commitCategory()
+                  }
+                  if (event.key === 'Escape') cancelCategory()
+                }}
+              />
+              <button className="btn btn-sm" onClick={commitCategory}>
+                Add
+              </button>
+              <button className="btn btn-sm btn-ghost" onClick={cancelCategory} aria-label="Cancel">
+                ✕
+              </button>
+            </div>
+          ) : (
+            <select
+              className="select"
+              value={draft.category || ''}
+              onChange={(event) =>
+                event.target.value === NEW_CATEGORY ? setAdding(true) : patch({ category: event.target.value })
+              }
+            >
+              <option value="">No category</option>
+              {categories.map((entry) => (
+                <option key={entry} value={entry}>
+                  {entry}
+                </option>
+              ))}
+              <option value={NEW_CATEGORY}>+ New category…</option>
+            </select>
+          )}
         </Field>
         <Field label="Collection">
           <input

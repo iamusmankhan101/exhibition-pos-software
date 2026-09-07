@@ -51,6 +51,9 @@ export const DEFAULT_SETTINGS = {
     paperSize: 'a4',
   },
   paymentMethods: ['Cash', 'Card', 'Bank Transfer', 'Online Payment'],
+  // Product categories the business has defined. Empty on a fresh install —
+  // the catalogue names its own, nothing is invented here.
+  categories: [],
   terms:
     'Items may be returned within 14 days with this receipt. Sale items and custom pieces are final. Thank you for supporting Tareez.',
   marketingConsentText:
