@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Field, Modal } from '../../components/ui.jsx'
+import Icon from '../../components/Icon.jsx'
 import { money } from '../../lib/format.js'
 import {
   canShareFiles,
@@ -238,26 +239,25 @@ export default function SaleComplete({ order, onClose }) {
             />
           </Field>
         )}
-        <div className="row wrap" style={{ gap: 8 }}>
-          {channels.whatsapp && (
-            <button
-              className="btn grow"
-              disabled={busy || (!canAttach && !contact.trim())}
-              onClick={whatsappPdf}
-            >
-              {busy ? 'Building…' : 'WhatsApp PDF'}
-            </button>
-          )}
-          {channels.sms && (
-            <button
-              className="btn grow"
-              disabled={!contact.trim()}
-              onClick={() => sendSms(contact, message)}
-            >
-              SMS
-            </button>
-          )}
-        </div>
+        {/* Sending the receipt on WhatsApp is the thing nearly every sale ends
+            with, so it gets the full width and the brand colour rather than
+            sharing a row with SMS. */}
+        {channels.whatsapp && (
+          <button
+            className="btn btn-lg btn-block btn-whatsapp"
+            disabled={busy || (!canAttach && !contact.trim())}
+            onClick={whatsappPdf}
+          >
+            <Icon name="whatsapp" size={19} />
+            {busy ? 'Building PDF…' : 'Send receipt on WhatsApp'}
+          </button>
+        )}
+
+        {channels.sms && (
+          <button className="btn btn-block" disabled={!contact.trim()} onClick={() => sendSms(contact, message)}>
+            SMS
+          </button>
+        )}
 
         {channels.whatsapp && (
           <p className="small muted" style={{ margin: '-2px 0 0' }}>

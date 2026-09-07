@@ -43,6 +43,8 @@ const PATHS = {
   download: 'M12 3v12M7.5 10.5 12 15l4.5-4.5M4 20h16',
   trash: 'M4 7h16M10 11v6M14 11v6M5 7l1 13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-13M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3',
   undo: 'M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10H9',
+  whatsapp:
+    'M3.6 20.4 5 16.6A8 8 0 1 1 7.9 19.2zM9.6 8.7h1.2l1 2.2-.9 1a6.2 6.2 0 0 0 2.9 2.9l1-.9 2.2 1v1.2c0 .6-.5 1.1-1.1 1-3.6-.4-6.9-3.7-7.3-7.3a1 1 0 0 1 1-1.1',
 }
 
 export default function Icon({ name, size = 18, strokeWidth = 1.7, style, className }) {

@@ -27,6 +27,9 @@
   --danger-soft: #fdecec;
   --info: #2f75d8;
   --info-soft: #e9f1fd;
+  /* WhatsApp green, darkened until white text clears AA contrast. */
+  --whatsapp: #0d8a45;
+  --whatsapp-hover: #0a7239;
 
   --r-sm: 8px;
   --r-md: 10px;
@@ -108,6 +111,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .btn-danger { background: #fff; border-color: #f3c6c9; color: var(--danger); }
 .btn-danger:hover:not(:disabled) { background: var(--danger-soft); border-color: #eda9ae; }
+
+.btn-whatsapp { background: var(--whatsapp); border-color: var(--whatsapp); color: #fff; box-shadow: 0 1px 2px rgba(13, 138, 69, 0.3); }
+.btn-whatsapp:hover:not(:disabled) { background: var(--whatsapp-hover); border-color: var(--whatsapp-hover); }
 
 .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); box-shadow: none; }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: transparent; }
