@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
-import QRCode from 'qrcode'
+import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { EmptyState, Field, ImagePicker, Modal, StatusBadge, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
@@ -1046,20 +1045,6 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
 function LabelSheet({ product, onClose }) {
   const { state } = useApp()
   const currency = useCurrency()
-  const [codes, setCodes] = useState({})
-
-  useEffect(() => {
-    let cancelled = false
-    Promise.all(
-      product.variants.map(async (variant) => [
-        variant.id,
-        await QRCode.toDataURL(variant.barcode, { margin: 0, width: 220, errorCorrectionLevel: 'M' }),
-      ]),
-    ).then((pairs) => !cancelled && setCodes(Object.fromEntries(pairs)))
-    return () => {
-      cancelled = true
-    }
-  }, [product])
 
   const print = () => {
     const win = window.open('', '_blank')
@@ -1068,45 +1053,37 @@ function LabelSheet({ product, onClose }) {
       String(value ?? '').replace(/[&<>]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char])
 
     /*
-     * Each label carries the barcode twice over.
-     *
-     * The EAN-13 bars are what a laser gun at the till reads off a garment in
-     * one pass, and they print at a fixed millimetre scale because a barcode
-     * scaled to fit its box is a barcode that will not scan. The QR beside it
-     * is for a phone camera, which handles a 2D code far better than a 1D one
-     * on fabric. The digits underneath cover the third case: a scuffed label
+     * The bars print at a fixed millimetre scale, never scaled to fit the label:
+     * a barcode resized to suit its box is a barcode that will not scan. The
+     * digits sit underneath for the case the bars cannot cover — a scuffed tag
      * that has to be keyed in by hand.
      */
     const cards = product.variants
       .map((variant) => {
-        const bars = ean13Svg(variant.barcode, { moduleWidth: 0.3, height: 14 })
+        const bars = ean13Svg(variant.barcode, { moduleWidth: 0.33, height: 16 })
         return `
         <div class="label">
-          <div class="top">
-            <img src="${codes[variant.id] || ''}" alt="" />
-            <div class="meta">
-              <strong>${escape(product.name)}</strong>
-              <span>${escape([variant.color, variant.size].filter(Boolean).join(' / '))}</span>
-              <span class="sku">${escape(variant.sku)}</span>
-              <span class="price">${escape(state.settings.currencySymbol)}${Number(variant.price).toFixed(2)}</span>
-            </div>
-          </div>
+          <strong>${escape(product.name)}</strong>
+          <span class="variant">${escape([variant.color, variant.size].filter(Boolean).join(' / '))}</span>
+          <span class="sku">${escape(variant.sku)}</span>
           <div class="bars">${bars || `<span class="code">${escape(variant.barcode)}</span>`}</div>
+          <span class="price">${escape(state.settings.currencySymbol)}${Number(variant.price).toFixed(2)}</span>
         </div>`
       })
       .join('')
 
     win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escape(product.name)} labels</title><style>
-      body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; padding: 10mm; display: flex; flex-wrap: wrap; gap: 6mm; }
-      .label { width: 52mm; border: 1px dashed #bbb; border-radius: 2mm; padding: 3mm; }
-      .top { display: flex; gap: 3mm; align-items: center; }
-      .top img { width: 15mm; height: 15mm; }
-      .meta { display: flex; flex-direction: column; font-size: 8pt; line-height: 1.3; min-width: 0; }
-      .meta strong { font-size: 9pt; }
-      .sku { font-family: monospace; color: #555; }
+      body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; padding: 10mm; display: flex; flex-wrap: wrap; gap: 5mm; }
+      .label {
+        width: 48mm; border: 1px dashed #bbb; border-radius: 2mm; padding: 3mm;
+        display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.6mm;
+      }
+      .label strong { font-size: 9pt; line-height: 1.2; }
+      .variant { font-size: 8pt; }
+      .sku { font-family: monospace; font-size: 7.5pt; color: #555; }
       .price { font-weight: 700; font-size: 11pt; margin-top: 1mm; }
-      .bars { margin-top: 2mm; text-align: center; }
-      .bars svg { display: block; margin: 0 auto; }
+      .bars { margin-top: 1.5mm; }
+      .bars svg { display: block; }
       .code { font-family: monospace; font-size: 9pt; }
       /* Bars must print solid black — a "save ink" greyscale pass kills them. */
       @media print {
@@ -1124,7 +1101,7 @@ function LabelSheet({ product, onClose }) {
       open
       onClose={onClose}
       title="Product labels"
-      subtitle={`${product.name} · barcode and QR per variant`}
+      subtitle={`${product.name} · one barcode per variant`}
       footer={
         <>
           <button className="btn" onClick={onClose}>
@@ -1138,39 +1115,33 @@ function LabelSheet({ product, onClose }) {
     >
       <div className="grid grid-2" style={{ gap: 10 }}>
         {product.variants.map((variant) => (
-          <div key={variant.id} className="card row" style={{ background: 'var(--surface-2)', padding: 12 }}>
-            {codes[variant.id] ? (
-              <img
-                src={codes[variant.id]}
-                alt=""
-                style={{ width: 64, height: 64, background: '#fff', borderRadius: 6, padding: 4 }}
+          <div
+            key={variant.id}
+            className="card"
+            style={{ background: 'var(--surface-2)', padding: 12, textAlign: 'center', gap: 2 }}
+          >
+            <div style={{ fontWeight: 620, fontSize: 13.5 }}>
+              {[variant.color, variant.size].filter(Boolean).join(' / ')}
+            </div>
+            <div className="small muted mono">{variant.sku}</div>
+            {ean13Svg(variant.barcode) ? (
+              <div
+                style={{ margin: '6px 0' }}
+                // The same renderer the printout uses, so the preview is what
+                // comes out of the printer.
+                dangerouslySetInnerHTML={{ __html: ean13Svg(variant.barcode, { height: 14 }) }}
               />
             ) : (
-              <div className="spinner" />
-            )}
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 620, fontSize: 13.5 }}>
-                {[variant.color, variant.size].filter(Boolean).join(' / ')}
+              <div className="small muted mono" style={{ margin: '6px 0' }}>
+                {variant.barcode} — not printable, use Barcodes to regenerate
               </div>
-              <div className="small muted mono">{variant.sku}</div>
-              {ean13Svg(variant.barcode) ? (
-                <div
-                  style={{ marginTop: 4, maxWidth: 150 }}
-                  // The same renderer the printout uses, so what is previewed
-                  // here is what comes out of the printer.
-                  dangerouslySetInnerHTML={{ __html: ean13Svg(variant.barcode, { height: 12 }) }}
-                />
-              ) : (
-                <div className="small muted mono">{variant.barcode}</div>
-              )}
-              <div style={{ fontWeight: 700, marginTop: 3 }}>{currency(variant.price)}</div>
-            </div>
+            )}
+            <div style={{ fontWeight: 700 }}>{currency(variant.price)}</div>
           </div>
         ))}
       </div>
       <p className="small muted" style={{ margin: 0 }}>
-        Each label prints the EAN-13 barcode for a laser scanner and a QR for a phone camera. Print at
-        100% — scaling a barcode to fit the paper is what stops it scanning.
+        Print at 100% — scaling a barcode to fit the paper is what stops it scanning.
       </p>
     </Modal>
   )
