@@ -6,6 +6,7 @@ import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Field, Modal } from '../../components/ui.jsx'
 import { money } from '../../lib/format.js'
 import {
+  canShareFiles,
   receiptMessage,
   receiptQr,
   receiptUrl,
@@ -67,6 +68,10 @@ export default function SaleComplete({ order, onClose }) {
     [order, state.settings, activeExhibition, customer],
   )
   const message = useMemo(() => receiptMessage(order, state.settings, url), [order, state.settings, url])
+  // The covering note that travels with an attached PDF — no link, because the
+  // receipt itself is in the message.
+  const note = useMemo(() => receiptMessage(order, state.settings), [order, state.settings])
+  const canAttach = useMemo(() => canShareFiles(), [])
 
   useEffect(() => {
     receiptQr(url).then(setQr).catch(() => setQr(null))
@@ -85,7 +90,7 @@ export default function SaleComplete({ order, onClose }) {
     setBusy(true)
     try {
       const { shareInvoicePdf } = await import('../../lib/pdf.js')
-      const result = await shareInvoicePdf(pdfData, qr, message)
+      const result = await shareInvoicePdf(pdfData, qr, note)
       if (result === 'downloaded') {
         actions.toast('PDF saved — attach it to your email', 'success')
       }
@@ -94,6 +99,30 @@ export default function SaleComplete({ order, onClose }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  /**
+   * Sends the receipt to WhatsApp as the PDF itself. On a phone the share sheet
+   * carries the file straight into a chat; a desktop browser cannot attach a
+   * file to `wa.me`, so there the PDF is saved and the chat is opened alongside
+   * it with the covering note ready to send.
+   */
+  const whatsappPdf = async () => {
+    if (!canAttach && !contact.trim()) return actions.toast('Enter a number first', 'warn')
+    setBusy(true)
+    try {
+      const { shareInvoicePdf } = await import('../../lib/pdf.js')
+      const result = await shareInvoicePdf(pdfData, qr, note)
+      if (result === 'downloaded') {
+        sendWhatsApp(contact, note)
+        actions.toast('PDF saved — attach it in WhatsApp', 'success')
+      }
+    } catch {
+      actions.toast('Could not build the PDF', 'error')
+    } finally {
+      setBusy(false)
+    }
+    return undefined
   }
 
   const savePdf = async () => {
@@ -213,10 +242,10 @@ export default function SaleComplete({ order, onClose }) {
           {channels.whatsapp && (
             <button
               className="btn grow"
-              disabled={!contact.trim()}
-              onClick={() => sendWhatsApp(contact, message) || actions.toast('Enter a number first', 'warn')}
+              disabled={busy || (!canAttach && !contact.trim())}
+              onClick={whatsappPdf}
             >
-              WhatsApp
+              {busy ? 'Building…' : 'WhatsApp PDF'}
             </button>
           )}
           {channels.sms && (
@@ -229,6 +258,14 @@ export default function SaleComplete({ order, onClose }) {
             </button>
           )}
         </div>
+
+        {channels.whatsapp && (
+          <p className="small muted" style={{ margin: '-2px 0 0' }}>
+            {canAttach
+              ? 'Opens the share sheet with the receipt PDF attached — choose WhatsApp, then the customer.'
+              : 'This browser cannot attach files to WhatsApp, so the PDF downloads and the chat opens beside it — drag the file in.'}
+          </p>
+        )}
 
         {channels.email && (
           <>

@@ -132,6 +132,11 @@ export function receiptUrl(order, settings, exhibitionName, customer) {
   return `${base}/r/${order.id}`
 }
 
+/**
+ * The covering note. `url` is optional: when the receipt travels as an attached
+ * PDF there is nothing to link to, and the encoded link is long enough to swamp
+ * the message on its own.
+ */
 export function receiptMessage(order, settings, url) {
   const symbol = settings.currencySymbol
   const total = `${symbol}${Number(order.total).toFixed(2)}`
@@ -141,9 +146,24 @@ export function receiptMessage(order, settings, url) {
     `Invoice: ${order.invoiceNo}`,
     `Date: ${formatDate(order.createdAt, true)}`,
     `Total: ${total} (${order.paymentMethod})`,
-    '',
-    `View your receipt: ${url}`,
+    ...(url ? ['', `View your receipt: ${url}`] : []),
   ].join('\n')
+}
+
+/**
+ * Whether this browser can push a file into the share sheet — the only route
+ * from a web app to a real WhatsApp attachment. True on iOS/Android; usually
+ * false on desktop, where the caller has to fall back to a download.
+ */
+export function canShareFiles() {
+  if (typeof navigator === 'undefined' || !navigator.canShare) return false
+  try {
+    return navigator.canShare({
+      files: [new File(['x'], 'probe.pdf', { type: 'application/pdf' })],
+    })
+  } catch {
+    return false
+  }
 }
 
 export async function receiptQr(url) {
