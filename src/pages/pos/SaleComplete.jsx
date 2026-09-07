@@ -8,7 +8,7 @@ import Icon from '../../components/Icon.jsx'
 import { money } from '../../lib/format.js'
 import { loadChunk } from '../../lib/chunk.js'
 import {
-  canShareFiles,
+  canShareToWhatsApp,
   receiptMessage,
   receiptQr,
   receiptUrl,
@@ -73,7 +73,7 @@ export default function SaleComplete({ order, onClose }) {
   // The covering note that travels with an attached PDF — no link, because the
   // receipt itself is in the message.
   const note = useMemo(() => receiptMessage(order, state.settings), [order, state.settings])
-  const canAttach = useMemo(() => canShareFiles(), [])
+  const canAttach = useMemo(() => canShareToWhatsApp(), [])
 
   useEffect(() => {
     receiptQr(url).then(setQr).catch(() => setQr(null))
@@ -107,30 +107,44 @@ export default function SaleComplete({ order, onClose }) {
   }
 
   /**
-   * Sends the receipt to WhatsApp as the PDF itself. On a phone the share sheet
-   * carries the file straight into a chat; a desktop browser cannot attach a
-   * file to `wa.me`, so there the PDF is saved and the chat is opened alongside
-   * it with the covering note ready to send.
+   * Sends the receipt to WhatsApp as the PDF itself.
+   *
+   * On a phone the share sheet carries the file straight into a chat. Nothing
+   * else can: WhatsApp Desktop registers no share extension, and `wa.me` takes
+   * text only — so everywhere else the PDF is downloaded and the chat is opened
+   * beside it with the covering note ready to send.
    */
   const whatsappPdf = async () => {
-    if (!canAttach && !contact.trim()) return actions.toast('Enter a number first', 'warn')
     setBusy(true)
     try {
-      const { shareInvoicePdf } = await loadChunk(
+      const pdf = await loadChunk(
         () => import('../../lib/pdf.js'),
         () => actions.toast('A new version was deployed — reloading…', 'warn'),
       )
-      const result = await shareInvoicePdf(pdfData, qr, note)
-      if (result === 'downloaded') {
-        sendWhatsApp(contact, note)
-        actions.toast('PDF saved — attach it in WhatsApp', 'success')
+      if (canAttach) {
+        await pdf.shareInvoicePdf(pdfData, qr, note)
+      } else {
+        await pdf.downloadInvoicePdf(pdfData, qr)
+        actions.toast('PDF saved — attach it in the chat', 'success')
       }
     } catch {
       actions.toast('Could not build the PDF', 'error')
     } finally {
       setBusy(false)
     }
-    return undefined
+  }
+
+  /**
+   * Deliberately synchronous up front: the chat window has to be opened inside
+   * the click. A `window.open` fired after an `await` has lost the user gesture
+   * and browsers block it as a popup, which is how the PDF ends up downloaded
+   * with no chat to attach it to.
+   */
+  const onWhatsApp = () => {
+    if (!canAttach && !sendWhatsApp(contact, note)) {
+      return actions.toast('Enter a number first', 'warn')
+    }
+    return whatsappPdf()
   }
 
   const savePdf = async () => {
@@ -256,7 +270,7 @@ export default function SaleComplete({ order, onClose }) {
           <button
             className="btn btn-lg btn-block btn-whatsapp"
             disabled={busy || (!canAttach && !contact.trim())}
-            onClick={whatsappPdf}
+            onClick={onWhatsApp}
           >
             <Icon name="whatsapp" size={19} />
             {busy ? 'Building PDF…' : 'Send receipt on WhatsApp'}
@@ -271,9 +285,23 @@ export default function SaleComplete({ order, onClose }) {
 
         {channels.whatsapp && (
           <p className="small muted" style={{ margin: '-2px 0 0' }}>
-            {canAttach
-              ? 'Opens the share sheet with the receipt PDF attached — choose WhatsApp, then the customer.'
-              : 'This browser cannot attach files to WhatsApp, so the PDF downloads and the chat opens beside it — drag the file in.'}
+            {canAttach ? (
+              'Opens the share sheet with the receipt PDF attached — choose WhatsApp, then the customer.'
+            ) : (
+              <>
+                Opens WhatsApp and saves the PDF — drag the file into the chat. The app cannot take a
+                file straight from the browser, which is why it arrives this way.{' '}
+                {/* If the desktop app is not installed the scheme above does
+                    nothing at all, so the web client stays one click away. */}
+                <button
+                  className="btn btn-ghost btn-sm"
+                  style={{ padding: 0, height: 'auto', textDecoration: 'underline' }}
+                  onClick={() => sendWhatsApp(contact, note, { web: true }) || actions.toast('Enter a number first', 'warn')}
+                >
+                  Use WhatsApp Web instead
+                </button>
+              </>
+            )}
           </p>
         )}
 

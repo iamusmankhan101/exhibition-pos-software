@@ -150,11 +150,7 @@ export function receiptMessage(order, settings, url) {
   ].join('\n')
 }
 
-/**
- * Whether this browser can push a file into the share sheet — the only route
- * from a web app to a real WhatsApp attachment. True on iOS/Android; usually
- * false on desktop, where the caller has to fall back to a download.
- */
+/** Whether this browser can push a file into the OS share sheet at all. */
 export function canShareFiles() {
   if (typeof navigator === 'undefined' || !navigator.canShare) return false
   try {
@@ -164,6 +160,25 @@ export function canShareFiles() {
   } catch {
     return false
   }
+}
+
+/**
+ * Whether the share sheet on this device can actually reach WhatsApp.
+ *
+ * Sharing a file and sharing it *to WhatsApp* are different questions, and only
+ * the second one matters here. macOS Safari answers the first happily — the
+ * sheet opens with AirDrop, Mail and Messages — but WhatsApp Desktop registers
+ * no macOS share extension, so it never appears in that list and the receipt
+ * goes nowhere. Only a phone or tablet share sheet carries WhatsApp, so
+ * everything else takes the download-and-attach route instead.
+ */
+export function canShareToWhatsApp() {
+  if (!canShareFiles()) return false
+  if (navigator.userAgentData?.mobile) return true
+  const ua = navigator.userAgent || ''
+  // iPadOS Safari claims to be a Mac; the touch points give it away.
+  const iPad = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1
+  return /Android|iPhone|iPad|iPod/i.test(ua) || iPad
 }
 
 export async function receiptQr(url) {
@@ -177,10 +192,27 @@ export async function receiptQr(url) {
 
 const digitsOnly = (value) => String(value || '').replace(/[^\d]/g, '')
 
-export function sendWhatsApp(number, text) {
+/**
+ * Opens the customer's chat.
+ *
+ * The `whatsapp://` scheme hands straight to the installed app — the desktop
+ * client or the phone one — and leaves the till exactly where it is. `wa.me`
+ * would instead open a browser tab that only asks whether to open the app, so
+ * the tab is pure overhead and it strands the salesperson away from the POS.
+ *
+ * Pass `web: true` for the link version, which is the one to use when the app
+ * may not be installed at all.
+ */
+export function sendWhatsApp(number, text, { web = false } = {}) {
   const to = digitsOnly(number)
   if (!to) return false
-  window.open(`https://wa.me/${to}?text=${encodeURIComponent(text)}`, '_blank', 'noopener')
+  const body = encodeURIComponent(text)
+  if (web) {
+    window.open(`https://wa.me/${to}?text=${body}`, '_blank', 'noopener')
+  } else {
+    // Not `window.open`: a custom scheme in a new tab leaves a blank one behind.
+    window.location.href = `whatsapp://send?phone=${to}&text=${body}`
+  }
   return true
 }
 
