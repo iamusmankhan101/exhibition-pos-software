@@ -192,6 +192,15 @@ const staffRow = (account) => ({
   max_discount_percent: account.maxDiscountPercent ?? null,
 })
 
+const roleRow = (role) => ({
+  id: role.id,
+  name: role.name,
+  description: role.description || '',
+  system: Boolean(role.system),
+  permissions: role.permissions || [],
+  max_discount_percent: role.maxDiscountPercent ?? 0,
+})
+
 const auditRow = (log) => ({
   id: log.id,
   user_id: log.userId || '',
@@ -366,6 +375,32 @@ const handlers = {
   async 'user.save'(entry, state) {
     const account = state.users.find((row) => row.id === entry.payload.id) || entry.payload
     await upsert('staff', staffRow(account))
+  },
+
+  /**
+   * Settings are one shared row, so the last device to save wins — the same
+   * device-authoritative rule the rest of phase 1 follows. The payload carries
+   * nothing; the row is mirrored out of local state.
+   */
+  async 'settings.save'(entry, state) {
+    await upsert('settings', {
+      id: 'settings',
+      data: state.settings,
+      updated_at: new Date().toISOString(),
+    })
+  },
+
+  async 'role.save'(entry, state) {
+    const role = (state.roles || []).find((row) => row.id === entry.payload.id)
+    if (role) await upsert('roles', roleRow(role))
+  },
+
+  async 'role.delete'(entry, state) {
+    // Staff move to the replacement role first: `staff.role` is a foreign key,
+    // so deleting the row out from under them would be rejected.
+    const moved = (state.users || []).filter((row) => row.role === entry.payload.reassignTo)
+    await upsert('staff', moved.map(staffRow))
+    await remove('roles', 'id', entry.payload.roleId)
   },
 
   async 'user.delete'(entry) {

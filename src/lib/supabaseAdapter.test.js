@@ -267,6 +267,60 @@ describe('supabase adapter', () => {
     expect(deletes.some((entry) => entry.table.includes('auth'))).toBe(false)
   })
 
+  it('mirrors the whole settings blob into the single settings row', async () => {
+    const state = baseState()
+    state.settings = { ...settings, currencySymbol: 'Rs ', categories: ['Scarves', 'Abayas'] }
+
+    const adapter = createSupabaseAdapter({ getState: () => state })
+    await adapter.push({
+      id: 'o9',
+      type: 'settings.save',
+      clientId: 'set-1',
+      payload: {},
+      createdAt: '2026-03-01T10:00:00.000Z',
+    })
+
+    const [row] = rowsFor('settings')
+    expect(row.id).toBe('settings')
+    // Read out of state, not out of the payload — which is deliberately empty.
+    expect(row.data.categories).toEqual(['Scarves', 'Abayas'])
+    expect(row.data.currencySymbol).toBe('Rs ')
+  })
+
+  it('sends a role by id and moves its staff before deleting it', async () => {
+    const state = baseState()
+    state.roles = [{ id: 'floor', name: 'Floor lead', permissions: ['pos'], maxDiscountPercent: 12 }]
+    state.users = [{ id: 'usr_1', name: 'Layla', email: 'l@t.com', role: 'salesperson', active: true }]
+
+    const adapter = createSupabaseAdapter({ getState: () => state })
+    await adapter.push({
+      id: 'o10',
+      type: 'role.save',
+      clientId: 'floor',
+      payload: { id: 'floor' },
+      createdAt: '2026-03-01T10:00:00.000Z',
+    })
+    expect(rowsFor('roles')[0]).toMatchObject({
+      id: 'floor',
+      name: 'Floor lead',
+      permissions: ['pos'],
+      max_discount_percent: 12,
+    })
+
+    writes.length = 0
+    await adapter.push({
+      id: 'o11',
+      type: 'role.delete',
+      clientId: 'floor',
+      payload: { roleId: 'floor', reassignTo: 'salesperson' },
+      createdAt: '2026-03-01T10:00:00.000Z',
+    })
+
+    // `staff.role` is a foreign key, so the reassignment has to land first.
+    expect(rowsFor('staff')[0]).toMatchObject({ id: 'usr_1', role: 'salesperson' })
+    expect(deletes).toContainEqual({ table: 'roles', column: 'id', values: ['floor'] })
+  })
+
   it('reports failure rather than throwing when state is not loaded yet', async () => {
     const adapter = createSupabaseAdapter({ getState: () => null })
     const result = await adapter.push({ id: 'o6', type: 'order.create', clientId: 'y', payload: {}, createdAt: '' })

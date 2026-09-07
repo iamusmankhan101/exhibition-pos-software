@@ -948,8 +948,8 @@ export function AppProvider({ children }) {
           (entry) => entry.toLowerCase() === clean.toLowerCase(),
         )
         if (existing) return existing
-        setState((current) =>
-          withAudit(
+        setState((current) => {
+          const draft = withAudit(
             {
               ...current,
               settings: { ...current.settings, categories: [...(current.settings.categories || []), clean] },
@@ -958,8 +958,9 @@ export function AppProvider({ children }) {
             clean,
             'settings',
             'categories',
-          ),
-        )
+          )
+          return withOutbox(draft, 'settings.save', uid('set'), {})
+        })
         return clean
       },
 
@@ -1554,13 +1555,14 @@ export function AppProvider({ children }) {
             return current
           }
 
-          return withAudit(
+          const draft = withAudit(
             { ...current, roles },
             exists ? 'Updated role' : 'Created role',
             `${role.name} · ${role.permissions.includes('*') ? 'full access' : `${role.permissions.length} permissions`}`,
             'role',
             role.id,
           )
+          return withOutbox(draft, 'role.save', uid('rol'), { id: role.id })
         })
         if (error) throw error
         toast(`Role "${role.name}" saved`, 'success')
@@ -1587,13 +1589,14 @@ export function AppProvider({ children }) {
           }
 
           const moved = current.users.filter((entry) => entry.role === roleId).length
-          return withAudit(
+          const draft = withAudit(
             { ...current, users, roles },
             'Deleted role',
             `${role.name}${moved ? ` · ${moved} user(s) moved to ${reassignTo}` : ''}`,
             'role',
             roleId,
           )
+          return withOutbox(draft, 'role.delete', uid('rol'), { roleId, reassignTo })
         })
         if (error) throw error
         toast('Role deleted', 'warn')
@@ -1737,7 +1740,12 @@ export function AppProvider({ children }) {
 
       /* settings */
       saveSettings(settings) {
-        setState((current) => withAudit({ ...current, settings }, 'Updated settings', '', 'settings', 'settings'))
+        setState((current) => {
+          const draft = withAudit({ ...current, settings }, 'Updated settings', '', 'settings', 'settings')
+          // The payload stays empty on purpose: the adapter mirrors the settings
+          // out of state, and the logo alone would bloat the command ledger.
+          return withOutbox(draft, 'settings.save', uid('set'), {})
+        })
         toast('Settings saved', 'success')
       },
 
