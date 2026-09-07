@@ -7,6 +7,7 @@ import { Field, Modal } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import { money } from '../../lib/format.js'
 import { loadChunk } from '../../lib/chunk.js'
+import { buildReceiptImage, copyReceiptImage, downloadReceiptImage } from '../../lib/receiptImage.js'
 import {
   canShareToWhatsApp,
   receiptMessage,
@@ -74,6 +75,7 @@ export default function SaleComplete({ order, onClose }) {
   // receipt itself is in the message.
   const note = useMemo(() => receiptMessage(order, state.settings), [order, state.settings])
   const canAttach = useMemo(() => canShareToWhatsApp(), [])
+  const pasteKey = useMemo(() => (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘V' : 'Ctrl+V'), [])
 
   useEffect(() => {
     receiptQr(url).then(setQr).catch(() => setQr(null))
@@ -135,16 +137,34 @@ export default function SaleComplete({ order, onClose }) {
   }
 
   /**
-   * Deliberately synchronous up front: the chat window has to be opened inside
-   * the click. A `window.open` fired after an `await` has lost the user gesture
-   * and browsers block it as a popup, which is how the PDF ends up downloaded
-   * with no chat to attach it to.
+   * The desktop route: copy the receipt as an image, then open the chat so it
+   * can be pasted in. WhatsApp on a computer takes no file from a browser, but
+   * every chat app accepts a pasted image — and an image previews inline in the
+   * conversation, which a PDF attachment does not.
+   *
+   * Synchronous up front on purpose. Both the clipboard write and the app
+   * hand-off have to happen inside the click: after an `await` the user gesture
+   * is gone, Safari refuses the clipboard, and the window is blocked as a popup.
+   * `copyReceiptImage` is handed the unresolved promise for exactly that reason.
    */
+  const whatsappImage = () => {
+    setBusy(true)
+    const copied = copyReceiptImage(buildReceiptImage(pdfData, qr).finally(() => setBusy(false)))
+    sendWhatsApp(contact, note)
+    return copied.then((ok) => {
+      if (ok) return actions.toast(`Receipt copied — press ${pasteKey} in the chat`, 'success')
+      // No clipboard (or it was refused): hand over the file instead.
+      return downloadReceiptImage(pdfData, qr)
+        .then(() => actions.toast('Receipt image saved — drag it into the chat', 'success'))
+        .catch(() => actions.toast('Could not build the receipt image', 'error'))
+    })
+  }
+
   const onWhatsApp = () => {
-    if (!canAttach && !sendWhatsApp(contact, note)) {
-      return actions.toast('Enter a number first', 'warn')
-    }
-    return whatsappPdf()
+    // A phone shares the PDF properly through the share sheet; nothing beats it.
+    if (canAttach) return whatsappPdf()
+    if (!contact.trim()) return actions.toast('Enter a number first', 'warn')
+    return whatsappImage()
   }
 
   const savePdf = async () => {
@@ -289,8 +309,7 @@ export default function SaleComplete({ order, onClose }) {
               'Opens the share sheet with the receipt PDF attached — choose WhatsApp, then the customer.'
             ) : (
               <>
-                Opens WhatsApp and saves the PDF — drag the file into the chat. The app cannot take a
-                file straight from the browser, which is why it arrives this way.{' '}
+                Copies the receipt as an image and opens the chat — press {pasteKey} to paste it in.{' '}
                 {/* If the desktop app is not installed the scheme above does
                     nothing at all, so the web client stays one click away. */}
                 <button
