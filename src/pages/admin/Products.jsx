@@ -1085,11 +1085,21 @@ function LabelSheet({ product, onClose }) {
       .bars { margin-top: 1.5mm; }
       .bars svg { display: block; }
       .code { font-family: monospace; font-size: 9pt; }
-      /* Bars must print solid black — a "save ink" greyscale pass kills them. */
+      /*
+       * Bars must reach the paper as solid black: a printer's "save ink" pass
+       * renders them grey and a scanner reads nothing, so print-color-adjust
+       * asks for the colours exactly as authored.
+       *
+       * The two fills are named separately on purpose. Forcing every rect black
+       * also blackens the quiet-zone background the barcode draws behind
+       * itself, which buries the bars and prints a solid block.
+       */
       @media print {
         body { padding: 5mm; }
         .label { break-inside: avoid; border-color: #ddd; }
-        svg rect { fill: #000 !important; }
+        .bars svg { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .bars svg .ean13-bars rect { fill: #000 !important; }
+        .bars svg .ean13-bg { fill: #fff !important; }
       }
     </style></head><body>${cards}</body></html>`)
     win.document.close()

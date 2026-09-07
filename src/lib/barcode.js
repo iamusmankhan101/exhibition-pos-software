@@ -137,11 +137,14 @@ export function ean13Svg(code, { moduleWidth = 0.33, height = 18, quiet = 11 } =
   const rightX = quiet * moduleWidth + 70 * moduleWidth
   const rightHalf = `<text x="${rightX.toFixed(3)}" y="${textY}" text-anchor="middle" ${digitStyle}>${digits.slice(7)}</text>`
 
+  // The two parts are classed so print CSS can force each to its own colour.
+  // A blanket `svg rect { fill: #000 }` would paint the quiet-zone background
+  // black and bury the bars under it — which prints as a solid block.
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth.toFixed(2)}mm" height="${totalHeight.toFixed(2)}mm"`,
     ` viewBox="0 0 ${totalWidth.toFixed(3)} ${totalHeight.toFixed(3)}">`,
-    `<rect width="${totalWidth.toFixed(3)}" height="${totalHeight.toFixed(3)}" fill="#fff"/>`,
-    `<g fill="#000">${bars}</g>`,
+    `<rect class="ean13-bg" width="${totalWidth.toFixed(3)}" height="${totalHeight.toFixed(3)}" fill="#fff"/>`,
+    `<g class="ean13-bars" fill="#000">${bars}</g>`,
     first,
     left,
     rightHalf,

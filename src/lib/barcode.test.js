@@ -103,4 +103,13 @@ describe('ean13Svg', () => {
   it('returns nothing for an invalid code rather than a misleading picture', () => {
     expect(ean13Svg('not-a-barcode')).toBe('')
   })
+
+  it('names the bars and the background apart, so print CSS can target one', () => {
+    const svg = ean13Svg('5901234123457')
+    // Without these hooks a blanket print rule blackens the background too and
+    // the label comes out as a solid block.
+    expect(svg).toContain('class="ean13-bg"')
+    expect(svg).toContain('class="ean13-bars"')
+    expect(svg).toContain('fill="#fff"')
+  })
 })
