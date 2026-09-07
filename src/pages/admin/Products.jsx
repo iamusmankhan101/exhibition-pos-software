@@ -4,7 +4,7 @@ import { useApp, useCurrency } from '../../lib/store.jsx'
 import { EmptyState, Field, ImagePicker, Modal, StatusBadge, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
-import { MAIN_LOCATION, uid } from '../../lib/format.js'
+import { MAIN_LOCATION, uid, variantLabel } from '../../lib/format.js'
 import { getStock, hasExhibitionPrice } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
 
@@ -40,7 +40,9 @@ export default function Products() {
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [labels, setLabels] = useState(null)
+  const [stocking, setStocking] = useState(null)
   const canDelete = can('records.delete')
+  const canStock = can('stock.adjust')
 
   const categories = useMemo(
     () => ['All', ...new Set(state.products.map((product) => product.category).filter(Boolean))],
@@ -191,6 +193,11 @@ export default function Products() {
                       <StatusBadge status={product.status} />
                     </td>
                     <td className="right nowrap" onClick={(event) => event.stopPropagation()}>
+                      {canStock && (
+                        <button className="btn btn-ghost btn-sm" onClick={() => setStocking(product)}>
+                          Stock
+                        </button>
+                      )}
                       <button className="btn btn-ghost btn-sm" onClick={() => setLabels(product)}>
                         Labels
                       </button>
@@ -216,8 +223,9 @@ export default function Products() {
         <ProductEditor
           product={editing}
           onClose={() => setEditing(null)}
-          onSave={(next) => {
+          onSave={(next, stockEntries) => {
             actions.saveProduct(next)
+            if (stockEntries?.length) actions.setStockLevels(stockEntries, 'Set in product editor')
             setEditing(null)
           }}
           onDelete={() => {
@@ -228,6 +236,8 @@ export default function Products() {
       )}
 
       {labels && <LabelSheet product={labels} onClose={() => setLabels(null)} />}
+
+      {stocking && <StockModal product={stocking} onClose={() => setStocking(null)} />}
 
       {canDelete && (
         <BulkBar
@@ -337,13 +347,159 @@ function DeleteProductsModal({ products, onClose, onDone }) {
   )
 }
 
+/* ----------------------------------------------------------------- stock */
+
+/**
+ * The places stock can sit from this screen: the warehouse always, plus the
+ * exhibition currently selected for selling. Anything further afield stays on
+ * the Inventory page, which can target any exhibition.
+ */
+function stockLocations(activeExhibition) {
+  const list = [{ id: MAIN_LOCATION, label: 'Warehouse stock' }]
+  if (activeExhibition) list.push({ id: activeExhibition.id, label: `${activeExhibition.name} stock` })
+  return list
+}
+
+const stockKey = (locationId, variantId) => `${locationId}:${variantId}`
+
+/**
+ * Turns the editable map into absolute counts. A blank box means "leave this
+ * count alone" rather than zero, so clearing a field can never write stock off
+ * by accident; anything unusable is reported back so the caller can complain.
+ */
+function stockEntriesFrom(edits, variants) {
+  const live = new Set(variants.map((variant) => variant.id))
+  const entries = []
+  let invalid = false
+  for (const [key, raw] of Object.entries(edits)) {
+    const split = key.indexOf(':')
+    const variantId = key.slice(split + 1)
+    // A variant removed in the editor takes its pending counts with it.
+    if (!live.has(variantId)) continue
+    if (String(raw).trim() === '') continue
+    const quantity = Number(raw)
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      invalid = true
+      continue
+    }
+    entries.push({ locationId: key.slice(0, split), variantId, quantity })
+  }
+  return { entries, invalid }
+}
+
+/** Quick counts-only editor, reached from the Stock button on a product row. */
+function StockModal({ product, onClose }) {
+  const { state, activeExhibition, actions } = useApp()
+  const locations = useMemo(() => stockLocations(activeExhibition), [activeExhibition])
+  const [edits, setEdits] = useState({})
+  const [note, setNote] = useState('')
+  const [error, setError] = useState('')
+
+  const valueFor = (locationId, variant) => {
+    const key = stockKey(locationId, variant.id)
+    return edits[key] ?? String(getStock(state, locationId, variant.id))
+  }
+
+  const save = () => {
+    const { entries, invalid } = stockEntriesFrom(edits, product.variants)
+    if (invalid) return setError('Stock counts must be zero or more.')
+    actions.setStockLevels(entries, note || `Stock set on ${product.name}`)
+    return onClose()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Update stock"
+      subtitle={product.name}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={save}>
+            Save stock
+          </button>
+        </>
+      }
+    >
+      {error && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {error}
+        </div>
+      )}
+
+      <p className="small muted" style={{ margin: 0 }}>
+        Type the count you want each variant to end up on — the difference is written to the stock log
+        as an adjustment.
+        {!activeExhibition && ' Pick an exhibition to also set stall stock, or use Inventory to transfer.'}
+      </p>
+
+      <div className="table-wrap">
+        <table className="data">
+          <thead>
+            <tr>
+              <th>Variant</th>
+              {locations.map((location) => (
+                <th key={location.id} className="right" style={{ width: 130 }}>
+                  {location.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {product.variants.map((variant) => (
+              <tr key={variant.id}>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{variantLabel(variant)}</div>
+                  <div className="small muted mono">{variant.sku}</div>
+                </td>
+                {locations.map((location) => (
+                  <td key={location.id} className="right">
+                    <input
+                      className="input right"
+                      style={{ width: 92, padding: '7px 9px' }}
+                      type="number"
+                      min="0"
+                      value={valueFor(location.id, variant)}
+                      onChange={(event) =>
+                        setEdits((current) => ({
+                          ...current,
+                          [stockKey(location.id, variant.id)]: event.target.value,
+                        }))
+                      }
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Field label="Reason" hint="Recorded against every line that changes.">
+        <input
+          className="input"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="Delivery received, stock count, damaged…"
+        />
+      </Field>
+    </Modal>
+  )
+}
+
 /* ---------------------------------------------------------------- editor */
 
 function ProductEditor({ product, onClose, onSave, onDelete }) {
-  const { state, can } = useApp()
+  const { state, activeExhibition, can } = useApp()
   const [draft, setDraft] = useState(product)
+  const [stock, setStock] = useState({})
   const [error, setError] = useState('')
   const isNew = !state.products.some((entry) => entry.id === product.id)
+  const canStock = can('stock.adjust')
+  const locations = useMemo(() => stockLocations(activeExhibition), [activeExhibition])
 
   const patch = (fields) => setDraft((current) => ({ ...current, ...fields }))
 
@@ -401,18 +557,25 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
       .find((variant) => skus.includes(variant.sku.toLowerCase()))
     if (clash) return setError(`SKU ${clash.sku} is already used by another product.`)
 
-    return onSave({
-      ...draft,
-      name: draft.name.trim(),
-      variants: draft.variants.map((variant) => ({
-        ...variant,
-        sku: variant.sku.trim(),
-        price: Number(variant.price),
-        exhibitionPrice: hasExhibitionPrice(variant) ? Number(variant.exhibitionPrice) : null,
-        cost: Number(variant.cost),
-        minStock: Number(variant.minStock) || 0,
-      })),
-    })
+    // Stock edits ride along with the save.
+    const { entries: stockEntries, invalid } = stockEntriesFrom(stock, draft.variants)
+    if (invalid) return setError('Stock counts must be zero or more.')
+
+    return onSave(
+      {
+        ...draft,
+        name: draft.name.trim(),
+        variants: draft.variants.map((variant) => ({
+          ...variant,
+          sku: variant.sku.trim(),
+          price: Number(variant.price),
+          exhibitionPrice: hasExhibitionPrice(variant) ? Number(variant.exhibitionPrice) : null,
+          cost: Number(variant.cost),
+          minStock: Number(variant.minStock) || 0,
+        })),
+      },
+      stockEntries,
+    )
   }
 
   return (
@@ -574,6 +737,30 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
                   onChange={(event) => patchVariant(variant.id, { minStock: event.target.value })}
                 />
               </Field>
+              {canStock &&
+                locations.map((location) => (
+                  <Field
+                    key={location.id}
+                    label={isNew && location.id === MAIN_LOCATION ? 'Opening stock' : location.label}
+                    hint={location.id === MAIN_LOCATION ? 'Saved as a stock adjustment.' : undefined}
+                  >
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      value={
+                        stock[stockKey(location.id, variant.id)] ??
+                        String(getStock(state, location.id, variant.id))
+                      }
+                      onChange={(event) =>
+                        setStock((current) => ({
+                          ...current,
+                          [stockKey(location.id, variant.id)]: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                ))}
             </div>
             {draft.variants.length > 1 && (
               <button

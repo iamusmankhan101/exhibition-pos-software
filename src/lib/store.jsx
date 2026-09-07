@@ -988,6 +988,57 @@ export function AppProvider({ children }) {
         toast('Stock adjusted', 'success')
       },
 
+      /**
+       * Sets absolute counts for several variant/location pairs in one go — the
+       * product editor and the quick stock modal both hand over a whole product
+       * at once. Each real change still lands as its own adjustment movement so
+       * the stock log stays readable per variant.
+       */
+      setStockLevels(entries, note = '') {
+        const wanted = (entries || [])
+          .filter((entry) => entry && entry.variantId && entry.locationId)
+          .map((entry) => ({ ...entry, quantity: Number(entry.quantity) }))
+          .filter((entry) => Number.isFinite(entry.quantity) && entry.quantity >= 0)
+        // Counting up front keeps the toast honest: state updaters are deferred,
+        // so anything tallied inside one is not available to report here.
+        const base = stateRef.current
+        const changing = wanted.filter(
+          (entry) => money(entry.quantity - getStock(base, entry.locationId, entry.variantId)) !== 0,
+        )
+        if (!changing.length) return
+
+        setState((current) => {
+          let next = current
+          for (const { variantId, locationId, quantity } of changing) {
+            const currentQty = getStock(next, locationId, variantId)
+            const delta = money(quantity - currentQty)
+            if (!delta) continue
+            next = applyStockChange(next, {
+              locationId,
+              variantId,
+              delta,
+              type: MOVEMENT_TYPES.ADJUSTMENT,
+              reference: 'Manual adjustment',
+              userId: user?.id,
+              note,
+            })
+            next = withAudit(
+              next,
+              'Stock adjustment',
+              `${currentQty} → ${quantity}${note ? ` · ${note}` : ''}`,
+              'inventory',
+              variantId,
+            )
+            next = withOutbox(next, 'stock.adjust', uid('adj'), { variantId, locationId, quantity, note })
+          }
+          return next
+        })
+        toast(
+          `Stock updated for ${changing.length} variant${changing.length === 1 ? '' : 's'}`,
+          'success',
+        )
+      },
+
       /* exhibitions */
       saveExhibition(exhibition) {
         setState((current) => {
