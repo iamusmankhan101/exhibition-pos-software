@@ -1,4 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [{ "source": "/((?!assets/).*)", "destination": "/index.html" }]
+  "rewrites": [{ "source": "/((?!api/|assets/).*)", "destination": "/index.html" }],
+  "crons": [{ "path": "/api/keep-warm", "schedule": "0 6 * * *" }]
 }

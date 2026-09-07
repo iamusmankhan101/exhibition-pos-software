@@ -331,6 +331,28 @@ The site is a static build, deployed on Vercel from `main`.
 `/assets/*`, `/sw.js` and the icons still resolve to real files; without the rewrite a reload on
 `/login` or `/pos` returns Vercel's 404 page instead of the app.
 
+`/assets/` and `/api/` are excluded from that rewrite on purpose. A hashed chunk from a previous
+build is genuinely gone once a new one ships, and answering it with `index.html` turns a plain 404
+into a confusing MIME-type error in the browser console. `loadChunk` in `src/lib/chunk.js` catches
+that case anyway and reloads onto the new build, but the 404 is what makes it diagnosable.
+
+### Keeping Supabase awake
+
+Supabase pauses a Free-plan project after **seven days without activity**, and this app's usage is
+the shape that trips it: a weekend exhibition, then weeks of an idle till. The project pauses in the
+gap, and because the POS keeps selling from IndexedDB the failure only surfaces when somebody checks
+a second device.
+
+`api/keep-warm.js` runs one anonymous query against Postgres, scheduled daily from the `crons` block
+in `vercel.json`. Row-level security answers with an empty set — the point is that the query reached
+the database at all. It reads nothing and writes nothing.
+
+Set `CRON_SECRET` on the Vercel project to stop anyone else calling the endpoint; Vercel then sends
+it as a bearer token, and the function checks it. Hitting `/api/keep-warm` by hand is the quickest
+way to see whether the backend is actually reachable from the deployment.
+
+On a paid Supabase plan projects do not auto-pause, and the cron can go.
+
 **Set the Supabase variables in the Vercel project, not just locally.** `.env.local` is gitignored,
 so a build that cannot see these two produces a local-only bundle: `isConfigured` is false, the app
 falls back to per-browser IndexedDB, and a device with no local accounts shows the first-run
