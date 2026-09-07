@@ -185,7 +185,7 @@ export default function SaleComplete({ order, onClose }) {
     return copyReceiptImage(pending)
       .then(async (ok) => {
         if (ok) {
-          actions.toast(`Receipt copied — press ${pasteKey} in the chat`, 'success')
+          actions.toast(`Receipt copied — press ${pasteKey} in the chat, then Enter`, 'success')
         } else {
           // No clipboard, or it was refused: hand over the file instead.
           saveReceiptImage(await pending, order.invoiceNo)
@@ -197,8 +197,14 @@ export default function SaleComplete({ order, onClose }) {
          * clipboard write on an unfocused document is rejected — doing this
          * first is why the paste came up empty. The protocol launch still
          * counts as user-initiated: transient activation outlives the copy.
+         *
+         * The box is left empty on purpose. Pasting an image into a chat that
+         * already has text opens WhatsApp's image preview with its own caption
+         * field, and the typed note is stranded behind it — press Enter out of
+         * habit and the text goes on its own, which is exactly what happened.
+         * The image is a complete receipt, so it needs no covering note.
          */
-        sendWhatsApp(contact, note)
+        sendWhatsApp(contact, '')
       })
       .catch(() => actions.toast('Could not build the receipt image', 'error'))
       .finally(() => setBusy(false))
@@ -353,7 +359,8 @@ export default function SaleComplete({ order, onClose }) {
               'Opens the share sheet with the receipt PDF attached — choose WhatsApp, then the customer.'
             ) : (
               <>
-                Copies the receipt as an image and opens the chat — press {pasteKey} to paste it in.{' '}
+                Copies the receipt as an image and opens the chat with an empty box — press {pasteKey},
+                then Enter.{' '}
                 {/* If the desktop app is not installed the scheme above does
                     nothing at all, so the web client stays one click away. */}
                 <button

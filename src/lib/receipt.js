@@ -206,12 +206,14 @@ const digitsOnly = (value) => String(value || '').replace(/[^\d]/g, '')
 export function sendWhatsApp(number, text, { web = false } = {}) {
   const to = digitsOnly(number)
   if (!to) return false
-  const body = encodeURIComponent(text)
+  // An empty note opens the chat with the box clear, which is what the paste
+  // route wants — see `whatsappImage` in the sale screen.
+  const query = text ? `text=${encodeURIComponent(text)}` : ''
   if (web) {
-    window.open(`https://wa.me/${to}?text=${body}`, '_blank', 'noopener')
+    window.open(`https://wa.me/${to}${query ? `?${query}` : ''}`, '_blank', 'noopener')
   } else {
     // Not `window.open`: a custom scheme in a new tab leaves a blank one behind.
-    window.location.href = `whatsapp://send?phone=${to}&text=${body}`
+    window.location.href = `whatsapp://send?phone=${to}${query ? `&${query}` : ''}`
   }
   return true
 }
