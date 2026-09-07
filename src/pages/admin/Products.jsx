@@ -681,6 +681,30 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
                   onChange={(event) => patchVariant(variant.id, { size: event.target.value })}
                 />
               </Field>
+              {canStock &&
+                locations.map((location) => (
+                  <Field
+                    key={location.id}
+                    label={isNew && location.id === MAIN_LOCATION ? 'Opening stock' : location.label}
+                    hint={location.id === MAIN_LOCATION ? 'Saved as a stock adjustment.' : undefined}
+                  >
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      value={
+                        stock[stockKey(location.id, variant.id)] ??
+                        String(getStock(state, location.id, variant.id))
+                      }
+                      onChange={(event) =>
+                        setStock((current) => ({
+                          ...current,
+                          [stockKey(location.id, variant.id)]: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                ))}
               <Field label="SKU">
                 <input
                   className="input mono"
@@ -737,30 +761,6 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
                   onChange={(event) => patchVariant(variant.id, { minStock: event.target.value })}
                 />
               </Field>
-              {canStock &&
-                locations.map((location) => (
-                  <Field
-                    key={location.id}
-                    label={isNew && location.id === MAIN_LOCATION ? 'Opening stock' : location.label}
-                    hint={location.id === MAIN_LOCATION ? 'Saved as a stock adjustment.' : undefined}
-                  >
-                    <input
-                      className="input"
-                      type="number"
-                      min="0"
-                      value={
-                        stock[stockKey(location.id, variant.id)] ??
-                        String(getStock(state, location.id, variant.id))
-                      }
-                      onChange={(event) =>
-                        setStock((current) => ({
-                          ...current,
-                          [stockKey(location.id, variant.id)]: event.target.value,
-                        }))
-                      }
-                    />
-                  </Field>
-                ))}
             </div>
             {draft.variants.length > 1 && (
               <button
