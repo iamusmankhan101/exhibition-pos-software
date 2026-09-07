@@ -6,6 +6,7 @@ import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Field, Modal } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import { money } from '../../lib/format.js'
+import { loadChunk } from '../../lib/chunk.js'
 import {
   canShareFiles,
   receiptMessage,
@@ -90,7 +91,10 @@ export default function SaleComplete({ order, onClose }) {
   const attachPdf = async () => {
     setBusy(true)
     try {
-      const { shareInvoicePdf } = await import('../../lib/pdf.js')
+      const { shareInvoicePdf } = await loadChunk(
+        () => import('../../lib/pdf.js'),
+        () => actions.toast('A new version was deployed — reloading…', 'warn'),
+      )
       const result = await shareInvoicePdf(pdfData, qr, note)
       if (result === 'downloaded') {
         actions.toast('PDF saved — attach it to your email', 'success')
@@ -112,7 +116,10 @@ export default function SaleComplete({ order, onClose }) {
     if (!canAttach && !contact.trim()) return actions.toast('Enter a number first', 'warn')
     setBusy(true)
     try {
-      const { shareInvoicePdf } = await import('../../lib/pdf.js')
+      const { shareInvoicePdf } = await loadChunk(
+        () => import('../../lib/pdf.js'),
+        () => actions.toast('A new version was deployed — reloading…', 'warn'),
+      )
       const result = await shareInvoicePdf(pdfData, qr, note)
       if (result === 'downloaded') {
         sendWhatsApp(contact, note)
@@ -129,7 +136,10 @@ export default function SaleComplete({ order, onClose }) {
   const savePdf = async () => {
     setBusy(true)
     try {
-      const { downloadInvoicePdf } = await import('../../lib/pdf.js')
+      const { downloadInvoicePdf } = await loadChunk(
+        () => import('../../lib/pdf.js'),
+        () => actions.toast('A new version was deployed — reloading…', 'warn'),
+      )
       await downloadInvoicePdf(pdfData, qr)
     } catch {
       actions.toast('Could not build the PDF', 'error')

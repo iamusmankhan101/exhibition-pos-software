@@ -11,6 +11,7 @@ import { useParams } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
 import { formatDate, money } from '../lib/format.js'
 import { decodeReceipt, receiptQr } from '../lib/receipt.js'
+import { loadChunk } from '../lib/chunk.js'
 
 function fragmentPayload() {
   const hash = window.location.hash
@@ -76,7 +77,7 @@ export default function Receipt() {
   const savePdf = async () => {
     setBusy(true)
     try {
-      const { downloadInvoicePdf } = await import('../lib/pdf.js')
+      const { downloadInvoicePdf } = await loadChunk(() => import('../lib/pdf.js'))
       await downloadInvoicePdf(data, qr)
     } catch {
       /* the print button remains as a fallback */

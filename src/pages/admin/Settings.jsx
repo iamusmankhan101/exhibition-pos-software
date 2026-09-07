@@ -5,6 +5,7 @@ import Icon from '../../components/Icon.jsx'
 import { formatDate, uid } from '../../lib/format.js'
 import { ALL_PERMISSIONS, PERMISSION_GROUPS } from '../../lib/permissions.js'
 import { categoryUsage, productCategories } from '../../lib/domain.js'
+import { loadChunk } from '../../lib/chunk.js'
 
 const CURRENCIES = [
   ['GBP', '£'],
@@ -36,7 +37,10 @@ export default function Settings() {
   const previewPdf = async () => {
     setPdfBusy(true)
     try {
-      const { downloadInvoicePdf } = await import('../../lib/pdf.js')
+      const { downloadInvoicePdf } = await loadChunk(
+        () => import('../../lib/pdf.js'),
+        () => actions.toast('A new version was deployed — reloading…', 'warn'),
+      )
       await downloadInvoicePdf(sampleInvoice(draft))
     } catch {
       actions.toast('Could not build the sample', 'error')
