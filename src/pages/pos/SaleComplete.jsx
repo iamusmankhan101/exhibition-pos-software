@@ -7,7 +7,7 @@ import { Field, Modal } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import { money } from '../../lib/format.js'
 import { loadChunk } from '../../lib/chunk.js'
-import { buildReceiptImage, copyReceiptImage, downloadReceiptImage } from '../../lib/receiptImage.js'
+import { buildReceiptImage, copyReceiptImage, saveReceiptImage } from '../../lib/receiptImage.js'
 import {
   canShareToWhatsApp,
   receiptMessage,
@@ -23,6 +23,7 @@ export default function SaleComplete({ order, onClose }) {
   const { state, actions, activeExhibition } = useApp()
   const currency = useCurrency()
   const [qr, setQr] = useState(null)
+  const [image, setImage] = useState(null)
   const [showQr, setShowQr] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -80,6 +81,25 @@ export default function SaleComplete({ order, onClose }) {
   useEffect(() => {
     receiptQr(url).then(setQr).catch(() => setQr(null))
   }, [url])
+
+  /*
+   * Rendered as soon as the screen opens rather than on the click.
+   *
+   * Two reasons, both about the clipboard. Safari drops the user gesture if
+   * anything is awaited before `clipboard.write`, and the write is refused
+   * outright once the document loses focus — which is precisely what opening
+   * WhatsApp does. A blob that is already sitting here makes the copy instant,
+   * so neither race is left to lose.
+   */
+  useEffect(() => {
+    let cancelled = false
+    buildReceiptImage(pdfData, qr)
+      .then((blob) => !cancelled && setImage(blob))
+      .catch(() => !cancelled && setImage(null))
+    return () => {
+      cancelled = true
+    }
+  }, [pdfData, qr])
 
   const channels = state.settings.receiptChannels
 
@@ -147,17 +167,41 @@ export default function SaleComplete({ order, onClose }) {
    * is gone, Safari refuses the clipboard, and the window is blocked as a popup.
    * `copyReceiptImage` is handed the unresolved promise for exactly that reason.
    */
+  /** Copy on its own, with no chat hand-off to steal focus. */
+  const copyImage = () =>
+    copyReceiptImage(Promise.resolve(image)).then((ok) => {
+      if (ok) return actions.toast(`Receipt copied — press ${pasteKey} to paste it`, 'success')
+      saveReceiptImage(image, order.invoiceNo)
+      return actions.toast('Clipboard unavailable — image saved instead', 'warn')
+    })
+
   const whatsappImage = () => {
     setBusy(true)
-    const copied = copyReceiptImage(buildReceiptImage(pdfData, qr).finally(() => setBusy(false)))
-    sendWhatsApp(contact, note)
-    return copied.then((ok) => {
-      if (ok) return actions.toast(`Receipt copied — press ${pasteKey} in the chat`, 'success')
-      // No clipboard (or it was refused): hand over the file instead.
-      return downloadReceiptImage(pdfData, qr)
-        .then(() => actions.toast('Receipt image saved — drag it into the chat', 'success'))
-        .catch(() => actions.toast('Could not build the receipt image', 'error'))
-    })
+    // Called synchronously so Safari still counts this as the click that asked
+    // for it. The blob is normally already rendered; the promise form covers the
+    // case where the screen was only just opened.
+    const pending = image ? Promise.resolve(image) : buildReceiptImage(pdfData, qr)
+
+    return copyReceiptImage(pending)
+      .then(async (ok) => {
+        if (ok) {
+          actions.toast(`Receipt copied — press ${pasteKey} in the chat`, 'success')
+        } else {
+          // No clipboard, or it was refused: hand over the file instead.
+          saveReceiptImage(await pending, order.invoiceNo)
+          actions.toast('Receipt image saved — drag it into the chat', 'warn')
+        }
+        /*
+         * Opened last, and only once the clipboard actually holds the image.
+         * Handing off to WhatsApp takes focus away from the page, and a
+         * clipboard write on an unfocused document is rejected — doing this
+         * first is why the paste came up empty. The protocol launch still
+         * counts as user-initiated: transient activation outlives the copy.
+         */
+        sendWhatsApp(contact, note)
+      })
+      .catch(() => actions.toast('Could not build the receipt image', 'error'))
+      .finally(() => setBusy(false))
   }
 
   const onWhatsApp = () => {
@@ -352,9 +396,14 @@ export default function SaleComplete({ order, onClose }) {
           </>
         )}
 
-        <div className="row" style={{ gap: 8 }}>
+        <div className="row wrap" style={{ gap: 8 }}>
           <button className="btn grow" onClick={share}>
             Share link
+          </button>
+          {/* A standalone copy, for when the paste is missed or the chat was
+              already open. Same image the WhatsApp button puts on the clipboard. */}
+          <button className="btn grow" disabled={!image} onClick={copyImage}>
+            Copy image
           </button>
           <button className="btn grow" disabled={busy} onClick={savePdf}>
             {busy ? 'Building…' : 'Download PDF'}

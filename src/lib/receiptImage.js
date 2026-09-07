@@ -311,13 +311,15 @@ export function copyReceiptImage(blobPromise) {
     .catch(() => false)
 }
 
-/** Fallback when the clipboard is unavailable: hand over the file instead. */
-export async function downloadReceiptImage(data, qrDataUrl) {
-  const blob = await buildReceiptImage(data, qrDataUrl)
+/**
+ * Fallback when the clipboard is unavailable: hand over the file instead.
+ * Takes the blob that was already rendered rather than drawing it a second time.
+ */
+export function saveReceiptImage(blob, invoiceNo) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `${data.invoiceNo}.png`
+  link.download = `${invoiceNo}.png`
   document.body.appendChild(link)
   link.click()
   link.remove()
