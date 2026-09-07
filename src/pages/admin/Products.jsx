@@ -7,14 +7,15 @@ import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Se
 import { MAIN_LOCATION, uid, variantLabel } from '../../lib/format.js'
 import { getStock, hasExhibitionPrice, productCategories } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
+import { ean13Svg, generateBarcode, isValidEan13, usedBarcodes } from '../../lib/barcode.js'
 
 /** Sentinel option value — never a real category name. */
 const NEW_CATEGORY = '\u0000new'
 
-const blankVariant = () => ({
+const blankVariant = (taken = new Set()) => ({
   id: uid('var'),
   sku: '',
-  barcode: String(Date.now()).slice(-12),
+  barcode: generateBarcode(taken),
   size: 'One Size',
   color: '',
   price: 0,
@@ -24,7 +25,7 @@ const blankVariant = () => ({
   minStock: 3,
 })
 
-const blankProduct = () => ({
+const blankProduct = (taken = new Set()) => ({
   id: uid('prd'),
   name: '',
   category: '',
@@ -32,7 +33,7 @@ const blankProduct = () => ({
   description: '',
   status: 'Active',
   image: null,
-  variants: [blankVariant()],
+  variants: [blankVariant(taken)],
 })
 
 export default function Products() {
@@ -44,6 +45,7 @@ export default function Products() {
   const [deleting, setDeleting] = useState(null)
   const [labels, setLabels] = useState(null)
   const [stocking, setStocking] = useState(null)
+  const [barcodes, setBarcodes] = useState(false)
   const canDelete = can('records.delete')
   const canStock = can('stock.adjust')
 
@@ -74,11 +76,16 @@ export default function Products() {
 
   const selection = useSelection(rows, (row) => row.product.id)
 
+  // Only counts codes that cannot be printed or would ring up the wrong item —
+  // a supplier's own valid barcode is left alone.
+  const barcodeGaps = useMemo(() => auditBarcodes(state.products).length, [state.products])
+
   const exportColumns = [
     { label: 'Product', value: (row) => row.product.name },
     { label: 'Category', value: (row) => row.product.category },
     { label: 'Collection', value: (row) => row.product.collection },
     { label: 'Variants', value: (row) => row.product.variants.length },
+    { label: 'Barcodes', value: (row) => row.product.variants.map((v) => v.barcode).join(' ') },
     { label: 'Main stock', value: (row) => row.mainStock },
     { label: 'Exhibition stock', value: (row) => row.exhibitionStock },
     { label: 'Status', value: (row) => row.product.status },
@@ -102,7 +109,12 @@ export default function Products() {
         <button className="btn" onClick={() => exportCsv('tareez-products', exportColumns, rows)}>
           Export
         </button>
-        <button className="btn btn-primary" onClick={() => setEditing(blankProduct())}>
+        {barcodeGaps > 0 && (
+          <button className="btn" onClick={() => setBarcodes(true)}>
+            Barcodes ({barcodeGaps})
+          </button>
+        )}
+        <button className="btn btn-primary" onClick={() => setEditing(blankProduct(usedBarcodes(state.products)))}>
           + New product
         </button>
       </div>
@@ -115,7 +127,7 @@ export default function Products() {
         <EmptyState
           title="No products yet"
           action={
-            <button className="btn btn-primary" onClick={() => setEditing(blankProduct())}>
+            <button className="btn btn-primary" onClick={() => setEditing(blankProduct(usedBarcodes(state.products)))}>
               Add your first product
             </button>
           }
@@ -243,6 +255,8 @@ export default function Products() {
 
       {stocking && <StockModal product={stocking} onClose={() => setStocking(null)} />}
 
+      {barcodes && <BarcodeAudit onClose={() => setBarcodes(false)} />}
+
       {canDelete && (
         <BulkBar
           selection={selection}
@@ -346,6 +360,135 @@ function DeleteProductsModal({ products, onClose, onDone }) {
             </div>
           ))}
         </div>
+      )}
+    </Modal>
+  )
+}
+
+/* -------------------------------------------------------------- barcodes */
+
+/**
+ * Which variants cannot be labelled as they stand.
+ *
+ * Deliberately narrow. A blank code has nothing to print, and a shared one
+ * scans as the wrong dress — both have to be fixed. Anything else is left
+ * alone, because a code that is not EAN-13 is very often a real barcode
+ * scanned off a supplier's own garment, and regenerating that would break a
+ * label already sewn into the item.
+ */
+function auditBarcodes(products) {
+  const seen = new Set()
+  const issues = []
+  for (const product of products) {
+    for (const variant of product.variants) {
+      const code = String(variant.barcode || '').trim()
+      if (!code) issues.push({ product, variant, code, reason: 'missing' })
+      else if (seen.has(code)) issues.push({ product, variant, code, reason: 'duplicate' })
+      if (code) seen.add(code)
+    }
+  }
+  return issues
+}
+
+/** Variants whose code is fine but is not a printable EAN-13. */
+function unprintable(products) {
+  const rows = []
+  for (const product of products) {
+    for (const variant of product.variants) {
+      const code = String(variant.barcode || '').trim()
+      if (code && !isValidEan13(code)) rows.push({ product, variant, code })
+    }
+  }
+  return rows
+}
+
+function BarcodeAudit({ onClose }) {
+  const { state, actions } = useApp()
+  const [alsoReplace, setAlsoReplace] = useState(false)
+
+  const broken = useMemo(() => auditBarcodes(state.products), [state.products])
+  const legacy = useMemo(() => unprintable(state.products), [state.products])
+  const targets = alsoReplace
+    ? [...broken, ...legacy.filter((row) => !broken.some((issue) => issue.variant.id === row.variant.id))]
+    : broken
+
+  const run = () => {
+    const taken = usedBarcodes(state.products)
+    const wanted = new Set(targets.map((row) => row.variant.id))
+    // Codes being replaced stop being reservations.
+    for (const row of targets) taken.delete(row.code)
+
+    const touched = state.products.filter((product) =>
+      product.variants.some((variant) => wanted.has(variant.id)),
+    )
+    for (const product of touched) {
+      const variants = product.variants.map((variant) => {
+        if (!wanted.has(variant.id)) return variant
+        const fresh = generateBarcode(taken)
+        taken.add(fresh)
+        return { ...variant, barcode: fresh }
+      })
+      actions.saveProduct({ ...product, variants })
+    }
+    actions.toast(`${targets.length} barcode${targets.length === 1 ? '' : 's'} regenerated`, 'success')
+    onClose()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Barcodes"
+      subtitle={`${targets.length} variant${targets.length === 1 ? '' : 's'} will get a new code`}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={!targets.length} onClick={run}>
+            Generate {targets.length || ''}
+          </button>
+        </>
+      }
+    >
+      <p className="small muted" style={{ margin: 0 }}>
+        New codes are EAN-13 in the 20–29 range, which GS1 reserves for in-store use — they can never
+        collide with a real product from a supplier.
+      </p>
+
+      {broken.length === 0 ? (
+        <p className="small muted" style={{ margin: 0 }}>
+          Every variant has its own barcode.
+        </p>
+      ) : (
+        <div className="stack-sm" style={{ maxHeight: 220, overflowY: 'auto' }}>
+          {broken.map((issue) => (
+            <div key={issue.variant.id} className="row-between small" style={{ padding: '3px 0' }}>
+              <span>
+                {issue.product.name} <span className="muted">{variantLabel(issue.variant)}</span>
+              </span>
+              <span className="badge badge-danger">{issue.reason}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {legacy.length > 0 && (
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={alsoReplace}
+            onChange={(event) => setAlsoReplace(event.target.checked)}
+          />
+          <span>
+            Also replace {legacy.length} code{legacy.length === 1 ? '' : 's'} that will not print as a
+            barcode
+            <span className="small muted" style={{ display: 'block' }}>
+              These scan as QR but have no valid EAN-13 bars. Leave this off if any of them were
+              scanned from a supplier’s own label.
+            </span>
+          </span>
+        </label>
       )}
     </Modal>
   )
@@ -529,13 +672,45 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
       variants: current.variants.map((variant) => (variant.id === id ? { ...variant, ...fields } : variant)),
     }))
 
+  /** Codes already spoken for: the rest of the catalogue, plus this draft. */
+  const takenBarcodes = (exceptVariantId = null) => {
+    const taken = usedBarcodes(state.products, draft.id)
+    for (const variant of draft.variants) {
+      if (variant.id !== exceptVariantId && variant.barcode) taken.add(String(variant.barcode))
+    }
+    return taken
+  }
+
   const addVariant = () => {
     const last = draft.variants[draft.variants.length - 1]
     setDraft((current) => ({
       ...current,
-      variants: [...current.variants, { ...blankVariant(), price: last?.price || 0, cost: last?.cost || 0 }],
+      variants: [
+        ...current.variants,
+        { ...blankVariant(takenBarcodes()), price: last?.price || 0, cost: last?.cost || 0 },
+      ],
     }))
   }
+
+  const regenerateBarcode = (variantId) =>
+    patchVariant(variantId, { barcode: generateBarcode(takenBarcodes(variantId)) })
+
+  /** Fills in anything blank or duplicated, leaving good codes alone. */
+  const fillBarcodes = () =>
+    setDraft((current) => {
+      const taken = usedBarcodes(state.products, current.id)
+      const variants = current.variants.map((variant) => {
+        const code = String(variant.barcode || '')
+        if (code && !taken.has(code)) {
+          taken.add(code)
+          return variant
+        }
+        const fresh = generateBarcode(taken)
+        taken.add(fresh)
+        return { ...variant, barcode: fresh }
+      })
+      return { ...current, variants }
+    })
 
   const removeVariant = (id) =>
     setDraft((current) => ({ ...current, variants: current.variants.filter((variant) => variant.id !== id) }))
@@ -577,6 +752,16 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
       .find((variant) => skus.includes(variant.sku.toLowerCase()))
     if (clash) return setError(`SKU ${clash.sku} is already used by another product.`)
 
+    // A barcode is printed onto a garment and scanned at the till, so a blank or
+    // shared one is worse than a wrong price: it rings up the wrong dress.
+    const codes = draft.variants.map((variant) => String(variant.barcode || '').trim())
+    if (codes.some((code) => !code)) return setError('Every variant needs a barcode.')
+    if (new Set(codes).size !== codes.length) return setError('Two variants share the same barcode.')
+
+    const outside = usedBarcodes(state.products, draft.id)
+    const shared = codes.find((code) => outside.has(code))
+    if (shared) return setError(`Barcode ${shared} is already used by another product.`)
+
     // Stock edits ride along with the save.
     const { entries: stockEntries, invalid } = stockEntriesFrom(stock, draft.variants)
     if (invalid) return setError('Stock counts must be zero or more.')
@@ -588,6 +773,7 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
         variants: draft.variants.map((variant) => ({
           ...variant,
           sku: variant.sku.trim(),
+          barcode: String(variant.barcode).trim(),
           price: Number(variant.price),
           exhibitionPrice: hasExhibitionPrice(variant) ? Number(variant.exhibitionPrice) : null,
           cost: Number(variant.cost),
@@ -706,6 +892,9 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
           <button className="btn btn-sm" onClick={autoSku}>
             Auto SKU
           </button>
+          <button className="btn btn-sm" title="Fill in missing or duplicated barcodes" onClick={fillBarcodes}>
+            Fix barcodes
+          </button>
           <button className="btn btn-sm btn-primary" onClick={addVariant}>
             + Variant
           </button>
@@ -761,12 +950,28 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
                   onChange={(event) => patchVariant(variant.id, { sku: event.target.value })}
                 />
               </Field>
-              <Field label="Barcode">
-                <input
-                  className="input mono"
-                  value={variant.barcode}
-                  onChange={(event) => patchVariant(variant.id, { barcode: event.target.value })}
-                />
+              <Field
+                label="Barcode"
+                hint={
+                  isValidEan13(variant.barcode)
+                    ? 'EAN-13 · ready to print and scan'
+                    : 'Not a valid EAN-13 — it will still scan, but the check digit is what catches a misread label.'
+                }
+              >
+                <div className="row" style={{ gap: 6 }}>
+                  <input
+                    className="input mono grow"
+                    value={variant.barcode}
+                    onChange={(event) => patchVariant(variant.id, { barcode: event.target.value })}
+                  />
+                  <button
+                    className="btn btn-sm"
+                    title="Generate a fresh unique barcode"
+                    onClick={() => regenerateBarcode(variant.id)}
+                  >
+                    New
+                  </button>
+                </div>
               </Field>
               <Field label="Selling price">
                 <input
@@ -850,29 +1055,56 @@ function LabelSheet({ product, onClose }) {
   const print = () => {
     const win = window.open('', '_blank')
     if (!win) return
+    const escape = (value) =>
+      String(value ?? '').replace(/[&<>]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char])
+
+    /*
+     * Each label carries the barcode twice over.
+     *
+     * The EAN-13 bars are what a laser gun at the till reads off a garment in
+     * one pass, and they print at a fixed millimetre scale because a barcode
+     * scaled to fit its box is a barcode that will not scan. The QR beside it
+     * is for a phone camera, which handles a 2D code far better than a 1D one
+     * on fabric. The digits underneath cover the third case: a scuffed label
+     * that has to be keyed in by hand.
+     */
     const cards = product.variants
-      .map(
-        (variant) => `
+      .map((variant) => {
+        const bars = ean13Svg(variant.barcode, { moduleWidth: 0.3, height: 14 })
+        return `
         <div class="label">
-          <img src="${codes[variant.id] || ''}" />
-          <div class="meta">
-            <strong>${product.name}</strong>
-            <span>${[variant.color, variant.size].filter(Boolean).join(' / ')}</span>
-            <span class="sku">${variant.sku}</span>
-            <span class="code">${variant.barcode}</span>
-            <span class="price">${state.settings.currencySymbol}${Number(variant.price).toFixed(2)}</span>
+          <div class="top">
+            <img src="${codes[variant.id] || ''}" alt="" />
+            <div class="meta">
+              <strong>${escape(product.name)}</strong>
+              <span>${escape([variant.color, variant.size].filter(Boolean).join(' / '))}</span>
+              <span class="sku">${escape(variant.sku)}</span>
+              <span class="price">${escape(state.settings.currencySymbol)}${Number(variant.price).toFixed(2)}</span>
+            </div>
           </div>
-        </div>`,
-      )
+          <div class="bars">${bars || `<span class="code">${escape(variant.barcode)}</span>`}</div>
+        </div>`
+      })
       .join('')
-    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${product.name} labels</title><style>
-      body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; padding: 14px; display: flex; flex-wrap: wrap; gap: 10px; }
-      .label { width: 175px; border: 1px dashed #bbb; border-radius: 8px; padding: 10px; display: flex; gap: 9px; align-items: center; }
-      .label img { width: 62px; height: 62px; }
-      .meta { display: flex; flex-direction: column; font-size: 10px; line-height: 1.35; min-width: 0; }
-      .meta strong { font-size: 11px; }
-      .sku, .code { font-family: monospace; color: #555; }
-      .price { font-weight: 700; font-size: 13px; margin-top: 3px; }
+
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escape(product.name)} labels</title><style>
+      body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; padding: 10mm; display: flex; flex-wrap: wrap; gap: 6mm; }
+      .label { width: 52mm; border: 1px dashed #bbb; border-radius: 2mm; padding: 3mm; }
+      .top { display: flex; gap: 3mm; align-items: center; }
+      .top img { width: 15mm; height: 15mm; }
+      .meta { display: flex; flex-direction: column; font-size: 8pt; line-height: 1.3; min-width: 0; }
+      .meta strong { font-size: 9pt; }
+      .sku { font-family: monospace; color: #555; }
+      .price { font-weight: 700; font-size: 11pt; margin-top: 1mm; }
+      .bars { margin-top: 2mm; text-align: center; }
+      .bars svg { display: block; margin: 0 auto; }
+      .code { font-family: monospace; font-size: 9pt; }
+      /* Bars must print solid black — a "save ink" greyscale pass kills them. */
+      @media print {
+        body { padding: 5mm; }
+        .label { break-inside: avoid; border-color: #ddd; }
+        svg rect { fill: #000 !important; }
+      }
     </style></head><body>${cards}</body></html>`)
     win.document.close()
     setTimeout(() => win.print(), 400)
@@ -883,7 +1115,7 @@ function LabelSheet({ product, onClose }) {
       open
       onClose={onClose}
       title="Product labels"
-      subtitle={`${product.name} · scannable QR per variant`}
+      subtitle={`${product.name} · barcode and QR per variant`}
       footer={
         <>
           <button className="btn" onClick={onClose}>
@@ -912,14 +1144,24 @@ function LabelSheet({ product, onClose }) {
                 {[variant.color, variant.size].filter(Boolean).join(' / ')}
               </div>
               <div className="small muted mono">{variant.sku}</div>
-              <div className="small muted mono">{variant.barcode}</div>
+              {ean13Svg(variant.barcode) ? (
+                <div
+                  style={{ marginTop: 4, maxWidth: 150 }}
+                  // The same renderer the printout uses, so what is previewed
+                  // here is what comes out of the printer.
+                  dangerouslySetInnerHTML={{ __html: ean13Svg(variant.barcode, { height: 12 }) }}
+                />
+              ) : (
+                <div className="small muted mono">{variant.barcode}</div>
+              )}
               <div style={{ fontWeight: 700, marginTop: 3 }}>{currency(variant.price)}</div>
             </div>
           </div>
         ))}
       </div>
       <p className="small muted" style={{ margin: 0 }}>
-        The POS scanner reads these QR labels as well as printed retail barcodes (EAN, UPC, Code 128/39).
+        Each label prints the EAN-13 barcode for a laser scanner and a QR for a phone camera. Print at
+        100% — scaling a barcode to fit the paper is what stops it scanning.
       </p>
     </Modal>
   )
