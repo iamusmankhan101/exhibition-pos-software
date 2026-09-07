@@ -76,9 +76,17 @@ export default function Products() {
 
   const selection = useSelection(rows, (row) => row.product.id)
 
-  // Only counts codes that cannot be printed or would ring up the wrong item —
-  // a supplier's own valid barcode is left alone.
-  const barcodeGaps = useMemo(() => auditBarcodes(state.products).length, [state.products])
+  /*
+   * Everything that needs a look: codes that are missing or shared, and codes
+   * that are fine as identifiers but cannot be drawn as bars — a barcode from
+   * before EAN-13 generation existed prints as plain digits and a laser scanner
+   * has nothing to read. Both have to open this door, or a catalogue whose only
+   * problem is unprintable codes offers no way in.
+   */
+  const barcodeGaps = useMemo(
+    () => auditBarcodes(state.products).length + unprintable(state.products).length,
+    [state.products],
+  )
 
   const exportColumns = [
     { label: 'Product', value: (row) => row.product.name },
@@ -404,10 +412,11 @@ function unprintable(products) {
 
 function BarcodeAudit({ onClose }) {
   const { state, actions } = useApp()
-  const [alsoReplace, setAlsoReplace] = useState(false)
-
   const broken = useMemo(() => auditBarcodes(state.products), [state.products])
   const legacy = useMemo(() => unprintable(state.products), [state.products])
+  // Pre-ticked when unprintable codes are the only reason this screen opened —
+  // otherwise it presents a list of problems with the fix switched off.
+  const [alsoReplace, setAlsoReplace] = useState(broken.length === 0 && legacy.length > 0)
   const targets = alsoReplace
     ? [...broken, ...legacy.filter((row) => !broken.some((issue) => issue.variant.id === row.variant.id))]
     : broken
@@ -458,7 +467,7 @@ function BarcodeAudit({ onClose }) {
 
       {broken.length === 0 ? (
         <p className="small muted" style={{ margin: 0 }}>
-          Every variant has its own barcode.
+          Every variant has its own barcode — nothing is missing or shared.
         </p>
       ) : (
         <div className="stack-sm" style={{ maxHeight: 220, overflowY: 'auto' }}>
@@ -481,11 +490,11 @@ function BarcodeAudit({ onClose }) {
             onChange={(event) => setAlsoReplace(event.target.checked)}
           />
           <span>
-            Also replace {legacy.length} code{legacy.length === 1 ? '' : 's'} that will not print as a
-            barcode
+            Replace {legacy.length} code{legacy.length === 1 ? '' : 's'} that will not print as a barcode
             <span className="small muted" style={{ display: 'block' }}>
-              These scan as QR but have no valid EAN-13 bars. Leave this off if any of them were
-              scanned from a supplier’s own label.
+              These still scan as a QR, but they are not valid EAN-13, so the label prints plain digits
+              and a laser scanner has nothing to read. Untick this if any of them were scanned from a
+              supplier’s own label — regenerating one would break a tag already in the garment.
             </span>
           </span>
         </label>
