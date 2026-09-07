@@ -377,6 +377,20 @@ create policy sync_write            on sync_commands   for insert with check (is
 create policy audit_write           on audit_logs      for insert with check (is_active_staff());
 create policy devices_write         on devices         for all    using (is_active_staff());
 
+-- The outbox retries, and the adapter writes every table with an upsert so that
+-- a replay is harmless. An upsert is `insert ... on conflict do update`, and
+-- Postgres checks the UPDATE policy the moment a row actually conflicts — so an
+-- insert-only policy works on the first attempt and returns 403 on every retry
+-- after it. That wedges the queue permanently: the command can never be marked
+-- synced, so it is retried forever and everything behind it waits. These five
+-- tables are append-only in practice; the update is a replay writing the same
+-- row, which is exactly what the idempotency contract promises.
+create policy payments_update       on payments        for update using (has_permission('pos'));
+create policy returns_update        on returns         for update using (has_permission('refund'));
+create policy movements_update      on stock_movements for update using (has_permission('pos'));
+create policy sync_update           on sync_commands   for update using (is_active_staff());
+create policy audit_update          on audit_logs      for update using (is_active_staff());
+
 create policy products_write    on products    for all using (has_permission('admin.products'));
 create policy variants_write    on variants    for all using (has_permission('admin.products'));
 create policy exhibitions_write on exhibitions for all using (has_permission('admin.exhibitions'));

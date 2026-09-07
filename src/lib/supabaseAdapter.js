@@ -438,8 +438,18 @@ export function createSupabaseAdapter({ getState }) {
 
       // The audit trail written alongside this command. PRD §19 wants who did
       // what and when to survive off the device.
+      //
+      // Deliberately not allowed to fail the command. The sale is the thing that
+      // must reach the server; an audit row is a record *about* it. Letting this
+      // throw means one rejected log entry stops the queue draining and every
+      // later sale waits behind it — which is exactly what a missing UPDATE
+      // policy on this table used to cause.
       const logs = (state.auditLogs || []).filter((log) => log.createdAt >= entry.createdAt)
-      await upsert('audit_logs', logs.slice(0, 20).map(auditRow))
+      try {
+        await upsert('audit_logs', logs.slice(0, 20).map(auditRow))
+      } catch (error) {
+        console.warn('[sync] audit log not written:', error.message)
+      }
 
       // Append-only ledger of what has been applied. Unique on client_id, so a
       // replay is recorded once; a conflict here means it already landed.

@@ -251,6 +251,30 @@ export function AppProvider({ children }) {
     [persist],
   )
 
+  /**
+   * Runs an updater against the latest state and commits the result — now,
+   * not whenever React gets to it.
+   *
+   * React only runs a `useState` updater eagerly while that fiber has no pending
+   * work. With anything else in flight — the sync loop marking outbox rows is
+   * enough — it defers, so an action that captures a value or an error inside
+   * its updater and reads it back afterwards gets neither: it returns `null` and
+   * swallows the throw. A sale then records with no receipt screen, and a
+   * rejected refund reports success.
+   *
+   * So anything that has to *tell the caller what happened* uses this instead.
+   * The updater may throw, and the throw reaches the caller.
+   */
+  const applyState = useCallback(
+    (updater) => {
+      const base = stateRef.current
+      const next = updater(base)
+      if (next !== base) setState(() => next)
+      return next
+    },
+    [setState],
+  )
+
   /* ------------------------------------------------------------- helpers */
 
   const toast = useCallback((message, tone = 'info') => {
@@ -1246,101 +1270,111 @@ export function AppProvider({ children }) {
       },
 
       /* sales */
+      /*
+       * Built from `stateRef` and then committed, rather than built inside the
+       * updater and read back out through a closure variable.
+       *
+       * React only runs a `useState` updater eagerly while that fiber has no
+       * pending work; with anything else in flight — the sync loop marking
+       * outbox rows is enough — it defers, and a value captured inside the
+       * updater is still `null` when the action returns. That is how a sale gets
+       * recorded correctly and the till still shows no receipt screen: the
+       * caller was handed nothing back. A thrown error went the same way, so a
+       * rejected sale failed silently too.
+       */
       completeSale(payload) {
         guard()
-        let created = null
-        let error = null
-        setState((current) => {
-          try {
-            const result = createOrder(current, {
-              ...payload,
-              deviceCode,
-              offlineCreated: !navigator.onLine,
-            })
-            created = result.order
-            if (result.duplicate) return current
-
-            let next = result.state
-
-            // Low-stock and large-discount notifications.
-            for (const item of payload.items) {
-              const remaining = getStock(next, payload.exhibitionId, item.variantId)
-              const found = next.products
-                .flatMap((product) => product.variants)
-                .find((variant) => variant.id === item.variantId)
-              const threshold = found?.minStock ?? next.settings.lowStockThreshold
-              if (remaining <= 0) {
-                next = withNotification(
-                  next,
-                  'stock',
-                  'Out of stock',
-                  `${item.name} (${item.sku}) is now out of stock at this exhibition.`,
-                  'danger',
-                )
-              } else if (remaining <= threshold) {
-                next = withNotification(
-                  next,
-                  'stock',
-                  'Low stock',
-                  `${item.name} (${item.sku}) — ${remaining} left at this exhibition.`,
-                  'warn',
-                )
-              }
-            }
-
-            const discountPercent = result.order.subtotal
-              ? (result.order.discountAmount / result.order.subtotal) * 100
-              : 0
-            if (discountPercent >= next.settings.largeDiscountAlertPercent) {
-              next = withNotification(
-                next,
-                'discount',
-                'Large discount applied',
-                `${result.order.invoiceNo} — ${discountPercent.toFixed(1)}% by ${result.order.salespersonName}.`,
-                'warn',
-              )
-            }
-
-            // Selling past the shelf count is a decision someone made, so it is
-            // named in the log and raised to the owner rather than passing quietly.
-            if (result.order.oversell) {
-              const lines = result.order.oversell.lines
-                .map((line) => `${line.name} (${line.requested} of ${line.available})`)
-                .join(', ')
-              next = withNotification(
-                next,
-                'stock',
-                'Sold past available stock',
-                `${result.order.invoiceNo} — ${lines}. Authorised by ${
-                  result.order.oversell.by || 'an override'
-                }.`,
-                'danger',
-              )
-              next = withAudit(
-                next,
-                'Overrode stock limit',
-                `${result.order.invoiceNo} · ${lines}`,
-                'order',
-                result.order.id,
-              )
-            }
-
-            const promoDetail = result.order.promoCode ? ` · promo ${result.order.promoCode}` : ''
-            next = withAudit(
-              next,
-              'Completed sale',
-              `${result.order.invoiceNo} · ${result.order.total} · ${result.order.paymentMethod}${promoDetail}`,
-              'order',
-              result.order.id,
-            )
-            return withOutbox(next, 'order.create', payload.clientId, result.order)
-          } catch (err) {
-            error = err
-            return current
-          }
+        const base = stateRef.current
+        // Throws straight out to the caller now, instead of into a variable
+        // nobody reads in time.
+        const result = createOrder(base, {
+          ...payload,
+          deviceCode,
+          offlineCreated: !navigator.onLine,
         })
-        if (error) throw error
-        return created
+        if (result.duplicate) return result.order
+
+        let next = result.state
+
+        // Low-stock and large-discount notifications.
+        for (const item of payload.items) {
+          const remaining = getStock(next, payload.exhibitionId, item.variantId)
+          const found = next.products
+            .flatMap((product) => product.variants)
+            .find((variant) => variant.id === item.variantId)
+          const threshold = found?.minStock ?? next.settings.lowStockThreshold
+          if (remaining <= 0) {
+            next = withNotification(
+              next,
+              'stock',
+              'Out of stock',
+              `${item.name} (${item.sku}) is now out of stock at this exhibition.`,
+              'danger',
+            )
+          } else if (remaining <= threshold) {
+            next = withNotification(
+              next,
+              'stock',
+              'Low stock',
+              `${item.name} (${item.sku}) — ${remaining} left at this exhibition.`,
+              'warn',
+            )
+          }
+        }
+
+        const discountPercent = result.order.subtotal
+          ? (result.order.discountAmount / result.order.subtotal) * 100
+          : 0
+        if (discountPercent >= next.settings.largeDiscountAlertPercent) {
+          next = withNotification(
+            next,
+            'discount',
+            'Large discount applied',
+            `${result.order.invoiceNo} — ${discountPercent.toFixed(1)}% by ${result.order.salespersonName}.`,
+            'warn',
+          )
+        }
+
+        // Selling past the shelf count is a decision someone made, so it is
+        // named in the log and raised to the owner rather than passing quietly.
+        if (result.order.oversell) {
+          const lines = result.order.oversell.lines
+            .map((line) => `${line.name} (${line.requested} of ${line.available})`)
+            .join(', ')
+          next = withNotification(
+            next,
+            'stock',
+            'Sold past available stock',
+            `${result.order.invoiceNo} — ${lines}. Authorised by ${
+              result.order.oversell.by || 'an override'
+            }.`,
+            'danger',
+          )
+          next = withAudit(
+            next,
+            'Overrode stock limit',
+            `${result.order.invoiceNo} · ${lines}`,
+            'order',
+            result.order.id,
+          )
+        }
+
+        const promoDetail = result.order.promoCode ? ` · promo ${result.order.promoCode}` : ''
+        next = withAudit(
+          next,
+          'Completed sale',
+          `${result.order.invoiceNo} · ${result.order.total} · ${result.order.paymentMethod}${promoDetail}`,
+          'order',
+          result.order.id,
+        )
+        next = withOutbox(next, 'order.create', payload.clientId, result.order)
+
+        // Committed wholesale: `next` already carries everything read out of
+        // `base`, and the only writer that can land in between is the sync
+        // loop marking outbox rows — safe to lose, because an unmarked entry
+        // is simply drained again and every command is idempotent.
+        setState(() => next)
+        return result.order
       },
 
       cancelOrder(orderId, reason) {
@@ -1436,60 +1470,46 @@ export function AppProvider({ children }) {
       },
 
       settlePayment(payload) {
-        let error = null
         let received = 0
-        setState((current) => {
-          try {
-            const result = settlePayment(current, { ...payload, userId: user?.id })
-            received = result.received
-            const draft = withAudit(
-              result.state,
-              'Recorded balance payment',
-              `${payload.invoiceNo} · ${result.received} · ${payload.method}${
-                result.balanceDue > 0 ? ` · ${result.balanceDue} still due` : ' · settled'
-              }`,
-              'order',
-              payload.orderId,
-            )
-            return withOutbox(draft, 'order.settle', uid('stl'), payload)
-          } catch (err) {
-            error = err
-            return current
-          }
+        applyState((current) => {
+          const result = settlePayment(current, { ...payload, userId: user?.id })
+          received = result.received
+          const draft = withAudit(
+            result.state,
+            'Recorded balance payment',
+            `${payload.invoiceNo} · ${result.received} · ${payload.method}${
+              result.balanceDue > 0 ? ` · ${result.balanceDue} still due` : ' · settled'
+            }`,
+            'order',
+            payload.orderId,
+          )
+          return withOutbox(draft, 'order.settle', uid('stl'), payload)
         })
-        if (error) throw error
         toast('Payment recorded', 'success')
         return received
       },
 
       refund(payload) {
-        let error = null
         let amount = 0
-        setState((current) => {
-          try {
-            const result = refundOrder(current, { ...payload, userId: user?.id, userName: user?.name })
-            amount = result.refundAmount
-            const detail = [
-              result.refundAmount > 0 ? `${result.refundAmount} via ${payload.refundMethod}` : null,
-              result.balanceCleared > 0 ? `${result.balanceCleared} written off the balance due` : null,
-            ]
-              .filter(Boolean)
-              .join(' · ')
-            let next = withNotification(
-              result.state,
-              'refund',
-              'Return processed',
-              `${payload.invoiceNo} — ${detail}.`,
-              'warn',
-            )
-            next = withAudit(next, 'Processed return', `${payload.invoiceNo} · ${detail}`, 'order', payload.orderId)
-            return withOutbox(next, 'order.refund', uid('rfd'), payload)
-          } catch (err) {
-            error = err
-            return current
-          }
+        applyState((current) => {
+          const result = refundOrder(current, { ...payload, userId: user?.id, userName: user?.name })
+          amount = result.refundAmount
+          const detail = [
+            result.refundAmount > 0 ? `${result.refundAmount} via ${payload.refundMethod}` : null,
+            result.balanceCleared > 0 ? `${result.balanceCleared} written off the balance due` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')
+          let next = withNotification(
+            result.state,
+            'refund',
+            'Return processed',
+            `${payload.invoiceNo} — ${detail}.`,
+            'warn',
+          )
+          next = withAudit(next, 'Processed return', `${payload.invoiceNo} · ${detail}`, 'order', payload.orderId)
+          return withOutbox(next, 'order.refund', uid('rfd'), payload)
         })
-        if (error) throw error
         toast(
           amount > 0 ? 'Refund processed and stock restored' : 'Return recorded and stock restored',
           'success',
@@ -1540,8 +1560,7 @@ export function AppProvider({ children }) {
 
       /* roles */
       saveRole(role) {
-        let error = null
-        setState((current) => {
+        applyState((current) => {
           const exists = current.roles.some((entry) => entry.id === role.id)
           const roles = exists
             ? current.roles.map((entry) => (entry.id === role.id ? role : entry))
@@ -1549,10 +1568,9 @@ export function AppProvider({ children }) {
 
           // Never allow a change that leaves nobody able to reach Settings.
           if (wouldLoseAdminAccess(current.users, roles)) {
-            error = new Error(
+            throw new Error(
               'That would leave no active user with access to Settings. Give another role admin access first.',
             )
-            return current
           }
 
           const draft = withAudit(
@@ -1564,19 +1582,14 @@ export function AppProvider({ children }) {
           )
           return withOutbox(draft, 'role.save', uid('rol'), { id: role.id })
         })
-        if (error) throw error
         toast(`Role "${role.name}" saved`, 'success')
       },
 
       deleteRole(roleId, reassignTo) {
-        let error = null
-        setState((current) => {
+        applyState((current) => {
           const role = current.roles.find((entry) => entry.id === roleId)
           if (!role) return current
-          if (role.system) {
-            error = new Error('Built-in roles cannot be deleted.')
-            return current
-          }
+          if (role.system) throw new Error('Built-in roles cannot be deleted.')
 
           const users = current.users.map((entry) =>
             entry.role === roleId ? { ...entry, role: reassignTo } : entry,
@@ -1584,8 +1597,7 @@ export function AppProvider({ children }) {
           const roles = current.roles.filter((entry) => entry.id !== roleId)
 
           if (wouldLoseAdminAccess(users, roles)) {
-            error = new Error('That would leave no active user with access to Settings.')
-            return current
+            throw new Error('That would leave no active user with access to Settings.')
           }
 
           const moved = current.users.filter((entry) => entry.role === roleId).length
@@ -1598,34 +1610,23 @@ export function AppProvider({ children }) {
           )
           return withOutbox(draft, 'role.delete', uid('rol'), { roleId, reassignTo })
         })
-        if (error) throw error
         toast('Role deleted', 'warn')
       },
 
       /* promo codes */
       savePromoCode(promo) {
-        let error = null
         const code = String(promo.code || '').trim().toUpperCase()
-        setState((current) => {
-          if (!code) {
-            error = new Error('Give the code a name, for example STALL10.')
-            return current
-          }
-          if (!(Number(promo.value) > 0)) {
-            error = new Error('A promo code has to take something off.')
-            return current
-          }
-          if (promo.type === 'percentage' && Number(promo.value) > 100) {
-            error = new Error('A percentage code cannot be more than 100%.')
-            return current
-          }
+        if (!code) throw new Error('Give the code a name, for example STALL10.')
+        if (!(Number(promo.value) > 0)) throw new Error('A promo code has to take something off.')
+        if (promo.type === 'percentage' && Number(promo.value) > 100) {
+          throw new Error('A percentage code cannot be more than 100%.')
+        }
+
+        applyState((current) => {
           const clash = current.promoCodes.some(
             (entry) => entry.id !== promo.id && String(entry.code).toUpperCase() === code,
           )
-          if (clash) {
-            error = new Error(`${code} is already in use.`)
-            return current
-          }
+          if (clash) throw new Error(`${code} is already in use.`)
 
           const exists = current.promoCodes.some((entry) => entry.id === promo.id)
           const record = {
@@ -1651,7 +1652,6 @@ export function AppProvider({ children }) {
           )
           return withOutbox(draft, 'promo.save', promo.id, record)
         })
-        if (error) throw error
         toast(`Promo code ${code} saved`, 'success')
       },
 
@@ -1798,6 +1798,7 @@ export function AppProvider({ children }) {
     return api
   }, [
     setState,
+    applyState,
     withAudit,
     withAuditAs,
     withNotification,
