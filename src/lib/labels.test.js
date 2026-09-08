@@ -9,7 +9,20 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { LABEL_LAYOUTS, buildLabels, labelSheetHtml, paginate, sheetSummary } from './labels.js'
+import {
+  CUSTOM_PAGE,
+  CUSTOM_RANGE,
+  LABEL_LAYOUTS,
+  MIN_MODULE_WIDTH,
+  MODULE_WIDTH,
+  bestColumns,
+  buildLabels,
+  customLayout,
+  labelSheetHtml,
+  paginate,
+  sheetSummary,
+  symbolWidth,
+} from './labels.js'
 
 const variant = (id, over = {}) => ({
   id,
@@ -131,5 +144,186 @@ describe('the printed document', () => {
     // No fixed grid at all — the labels flow, so nothing pins them to cells.
     expect(html).not.toContain('grid-template-columns')
     expect(html).toContain('@page { size: A4; margin: 8mm; }')
+  })
+})
+
+describe('a custom number per sheet', () => {
+  /*
+   * A derived size is rounded, so the grid cannot land on the page exactly the
+   * way the hand-measured 12-up layout does. What matters is the direction: it
+   * must never exceed the page — a grid wider or taller than its fixed-size
+   * sheet spills onto an extra blank page — and it must not waste more than the
+   * rounding, which is a hundredth of a millimetre per row or column.
+   */
+  const fits = (layout) => {
+    const { page, columns, rows, label } = layout
+    const across = page.marginX * 2 + columns * label.width
+    const down = page.marginY * 2 + rows * label.height
+    expect(across).toBeLessThanOrEqual(page.width)
+    expect(down).toBeLessThanOrEqual(page.height)
+    expect(across).toBeGreaterThan(page.width - columns * 0.01 - 1e-9)
+    expect(down).toBeGreaterThan(page.height - rows * 0.01 - 1e-9)
+  }
+
+  it('honours the count exactly rather than rounding to a tidy grid', () => {
+    for (const count of [1, 2, 6, 7, 11, 12, 13, 24, 40]) {
+      expect(customLayout({ perSheet: count }).perSheet).toBe(count)
+    }
+  })
+
+  it('fills the printable page at every count', () => {
+    for (const count of [1, 4, 7, 12, 20, 33]) fits(customLayout({ perSheet: count }))
+  })
+
+  it('leaves spare cells when the count does not divide by the columns', () => {
+    // Seven at three across is three rows of three: seven labels, two gaps.
+    const layout = customLayout({ perSheet: 7, columns: 3 })
+    expect(layout.rows).toBe(3)
+    expect(layout.cells).toBe(9)
+    expect(layout.perSheet).toBe(7)
+    expect(layout.hint).toContain('2 cells left empty')
+  })
+
+  it('keeps the spare cells on the page so labels stay in their measured spots', () => {
+    const layout = customLayout({ perSheet: 7, columns: 3 })
+    const pages = paginate(Array.from({ length: 7 }, () => ({})), layout.perSheet, layout.cells)
+    expect(pages).toHaveLength(1)
+    expect(pages[0]).toHaveLength(9)
+    expect(pages[0].slice(7)).toEqual([null, null])
+  })
+
+  it('reproduces the standard 12-up grid when asked for twelve', () => {
+    expect(bestColumns(12)).toBe(3)
+    expect(customLayout({ perSheet: 12 }).rows).toBe(4)
+  })
+
+  it('takes a column override', () => {
+    expect(customLayout({ perSheet: 12, columns: 4 })).toMatchObject({ columns: 4, rows: 3 })
+  })
+
+  it('clamps a count outside the offered range', () => {
+    expect(customLayout({ perSheet: 0 }).perSheet).toBe(CUSTOM_RANGE.min)
+    expect(customLayout({ perSheet: 5000 }).perSheet).toBe(CUSTOM_RANGE.max)
+    expect(customLayout({ perSheet: 'nonsense' }).perSheet).toBe(CUSTOM_RANGE.min)
+  })
+})
+
+describe('barcode scale', () => {
+  it('never magnifies past nominal, however much room there is', () => {
+    expect(customLayout({ perSheet: 1 }).barcode.moduleWidth).toBe(MODULE_WIDTH)
+    expect(LABEL_LAYOUTS.a4_12.barcode.moduleWidth).toBe(MODULE_WIDTH)
+  })
+
+  it('keeps the symbol inside the label it has to print on', () => {
+    for (const count of [1, 4, 9, 12, 20, 40]) {
+      const layout = customLayout({ perSheet: count })
+      const usable = layout.label.width - layout.label.padding * 2
+      expect(symbolWidth(layout.barcode.moduleWidth)).toBeLessThanOrEqual(usable + 1e-6)
+    }
+  })
+
+  it('flags a sheet too dense for a readable barcode instead of shrinking it silently', () => {
+    const roomy = customLayout({ perSheet: 12 })
+    expect(roomy.barcode.scannable).toBe(true)
+    expect(roomy.barcode.moduleWidth).toBeGreaterThanOrEqual(MIN_MODULE_WIDTH)
+
+    // Ten across leaves under 20mm per label — nowhere near an EAN-13.
+    const cramped = customLayout({ perSheet: 40, columns: 10 })
+    expect(cramped.barcode.scannable).toBe(false)
+  })
+
+  it('agrees with the printable width the page actually offers', () => {
+    const usableWidth = CUSTOM_PAGE.width - CUSTOM_PAGE.marginX * 2
+    const layout = customLayout({ perSheet: 4, columns: 4 })
+    expect(layout.label.width).toBeCloseTo(usableWidth / 4, 5)
+  })
+})
+
+describe('the printed document at a custom size', () => {
+  const render = (perSheet, columns) =>
+    labelSheetHtml(
+      buildLabels([{ id: 'p', name: 'Scarf', variants: [variant('a')] }], 1),
+      {
+        layout: customLayout({ perSheet, columns }),
+        currencySymbol: '£',
+        renderBarcode: (code, options) => `<svg data-module="${options.moduleWidth}"></svg>`,
+      },
+    )
+
+  it('hands the barcode scale from the layout to the renderer', () => {
+    const layout = customLayout({ perSheet: 24 })
+    expect(render(24)).toContain(`data-module="${layout.barcode.moduleWidth}"`)
+  })
+
+  it('lays out the grid the layout describes', () => {
+    const html = render(7, 3)
+    expect(html).toContain('grid-template-columns: repeat(3,')
+    expect(html).toContain('grid-template-rows: repeat(3,')
+    // Nine cells for seven labels: two blanks hold the tail positions.
+    expect(html.match(/class="label blank"/g)).toHaveLength(8)
+  })
+})
+
+describe('choosing the columns', () => {
+  it('keeps the bars at full size in preference to a prettier grid', () => {
+    for (const count of [4, 8, 12, 16, 20, 24, 30, 40, 60]) {
+      const layout = customLayout({ perSheet: count })
+      expect(layout.barcode.moduleWidth).toBe(MODULE_WIDTH)
+      expect(layout.barcode.scannable).toBe(true)
+    }
+  })
+
+  it('prefers a grid that uses every cell', () => {
+    // 24 tiles exactly as 4 x 6; a squarer 5 x 5 would waste a label and
+    // narrow the rest.
+    expect(customLayout({ perSheet: 24 })).toMatchObject({ columns: 4, rows: 6, cells: 24 })
+  })
+
+  it('wastes at most a row when the count does not tile', () => {
+    for (const count of [7, 11, 13, 17, 23, 29]) {
+      const layout = customLayout({ perSheet: count })
+      expect(layout.cells - count).toBeLessThan(layout.columns)
+    }
+  })
+})
+
+describe('a label too short for everything on it', () => {
+  it('keeps all four lines at a comfortable size', () => {
+    expect(LABEL_LAYOUTS.a4_12.lines).toEqual({ name: true, variant: true, sku: true, price: true })
+    expect(customLayout({ perSheet: 24 }).lines).toEqual({ name: true, variant: true, sku: true, price: true })
+  })
+
+  it('drops the recoverable lines first and the barcode never', () => {
+    const dense = customLayout({ perSheet: 48 })
+    expect(dense.lines.variant).toBe(false)
+    expect(dense.lines.sku).toBe(false)
+    // Whatever else goes, the bars are still drawn at full width.
+    expect(dense.barcode.moduleWidth).toBe(MODULE_WIDTH)
+  })
+
+  it('leaves the dropped lines out of the printed markup', () => {
+    const layout = customLayout({ perSheet: 48 })
+    const html = labelSheetHtml(
+      buildLabels([{ id: 'p', name: 'Silk Scarf', variants: [variant('a')] }], 1),
+      { layout, currencySymbol: '£', renderBarcode: () => '<svg></svg>' },
+    )
+    expect(html).not.toContain('Silk Scarf')
+    expect(html).not.toContain('SKU-a')
+    expect(html).toContain('<svg></svg>')
+  })
+
+  it('drops nothing on a flowing layout, which has no height to overflow', () => {
+    expect(LABEL_LAYOUTS.compact.lines).toEqual({ name: true, variant: true, sku: true, price: true })
+  })
+
+  it('fits the content it keeps inside the label', () => {
+    for (const count of [12, 24, 40, 48, 60]) {
+      const layout = customLayout({ perSheet: count })
+      const room = layout.label.height - layout.label.padding * 2
+      const text = Object.entries(layout.lines)
+        .filter(([, on]) => on)
+        .reduce((sum, [line]) => sum + layout.type[line] * 1.25 * 0.3528 + 0.6, 0)
+      expect(layout.barcode.height + 4.4 + text).toBeLessThanOrEqual(room + 1e-6)
+    }
   })
 })

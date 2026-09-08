@@ -18,6 +18,134 @@
  */
 
 /**
+ * An EAN-13 is 95 modules of bars plus a quiet zone either side, and `quiet`
+ * here matches the default in `ean13Svg` — the pale margin is part of the
+ * symbol, not padding around it, and a scanner that cannot see it does not read
+ * the code.
+ */
+const MODULES = 95
+const QUIET = 11
+const SYMBOL_MODULES = MODULES + QUIET * 2
+
+/**
+ * Nominal module width, and the smallest one still worth printing.
+ *
+ * GS1 specifies EAN-13 at a nominal size and permits magnification down to 80%
+ * of it; below that the printed bar edges stop being crisp enough for a cheap
+ * laser gun to resolve. 0.33mm is the nominal this app has always printed at, so
+ * 0.264 is that 80% floor. A layout that cannot give the symbol 0.264 is not a
+ * layout that can carry a barcode, and the UI says so rather than quietly
+ * shrinking it.
+ */
+export const MODULE_WIDTH = 0.33
+export const MIN_MODULE_WIDTH = 0.264
+
+/** How wide the printed symbol is at a given module width, in millimetres. */
+export function symbolWidth(moduleWidth) {
+  return SYMBOL_MODULES * moduleWidth
+}
+
+/** Typography at the reference label size, in points. */
+const BASE_TYPE = { name: 9, variant: 8, sku: 7.5, price: 11 }
+const REFERENCE_WIDTH = 63.5
+
+const round = (value, places = 2) => Number(value.toFixed(places))
+
+/**
+ * Rounds a millimetre measurement down, never up.
+ *
+ * A derived label size has to be rounded somewhere, and rounding up is the
+ * dangerous direction: three columns of 64.67mm is 194.01mm of grid inside
+ * 194mm of page, and a grid a hundredth of a millimetre too wide for its
+ * fixed-size sheet can spill into an extra blank page on every sheet printed.
+ * Rounding down leaves the remainder in the margin, where it is invisible.
+ */
+const floorTo = (value, places = 2) => {
+  const factor = 10 ** places
+  return Math.floor(value * factor) / factor
+}
+
+/**
+ * The barcode scale and the text sizes a label of this size can carry.
+ *
+ * The bars are the one thing that is fitted rather than fixed, and only
+ * downwards, only as far as the 80% floor — everything else on the label is
+ * decoration that can be made smaller, but a symbol too wide for its label would
+ * print off the edge and scan as nothing at all. `scannable` is false when even
+ * the floor does not fit, which is the signal the UI turns into a warning.
+ */
+const MM_PER_PT = 0.3528
+const lineHeight = (points) => points * 1.25 * MM_PER_PT
+
+/** The digit row `ean13Svg` draws under the bars, and the gap between lines. */
+const DIGIT_ROW = 4.4
+const LINE_GAP = 0.6
+
+/**
+ * What gets dropped first when a label is too short for everything.
+ *
+ * The barcode is never in this list: it is the entire reason the label exists,
+ * and a label whose bars are clipped by an overflowing product name is worse
+ * than one with no name at all. Of the text, the price and the name are what a
+ * customer and a salesperson read off the shelf, so the size and the SKU — both
+ * recoverable by scanning — go first.
+ */
+const DROP_ORDER = ['variant', 'sku', 'name', 'price']
+
+/**
+ * The barcode scale, text sizes, and which lines actually fit on this label.
+ *
+ * The bars are the one thing that is fitted rather than fixed, and only
+ * downwards, only as far as the 80% floor — everything else on the label is
+ * decoration that can be made smaller or dropped, but a symbol too wide for its
+ * label would print off the edge and scan as nothing at all. `scannable` is
+ * false when even the floor does not fit, which is the signal the UI turns into
+ * a warning.
+ */
+function metricsFor(label) {
+  const available = label.width - label.padding * 2
+  const moduleWidth = Math.min(MODULE_WIDTH, available / SYMBOL_MODULES)
+  const scale = Math.max(0.72, Math.min(1, label.width / REFERENCE_WIDTH))
+  // The symbol plus its digit line, with the rest of the label left for text.
+  const barHeight = label.height ? Math.max(8, Math.min(16, label.height * 0.26)) : 16
+
+  const type = {
+    name: round(BASE_TYPE.name * scale, 1),
+    variant: round(BASE_TYPE.variant * scale, 1),
+    sku: round(BASE_TYPE.sku * scale, 1),
+    price: round(BASE_TYPE.price * scale, 1),
+  }
+
+  /*
+   * A flowing layout has no fixed height to overflow, so nothing is dropped
+   * there. A gridded one does: its cells are a fixed size, and content taller
+   * than the cell is clipped rather than pushed onto another page.
+   */
+  const lines = { name: true, variant: true, sku: true, price: true }
+  if (label.height) {
+    const room = label.height - label.padding * 2
+    const used = () =>
+      barHeight +
+      DIGIT_ROW +
+      DROP_ORDER.filter((line) => lines[line]).reduce((sum, line) => sum + lineHeight(type[line]) + LINE_GAP, 0)
+    for (const line of DROP_ORDER) {
+      if (used() <= room) break
+      lines[line] = false
+    }
+  }
+
+  return {
+    barcode: {
+      moduleWidth: round(moduleWidth, 3),
+      height: round(barHeight, 1),
+      scannable: moduleWidth >= MIN_MODULE_WIDTH,
+    },
+    type,
+    lines,
+  }
+}
+
+/**
  * The sheet geometries on offer.
  *
  * `a4_12` matches the common 12-up A4 label sheet. The margins are what is left
@@ -35,6 +163,7 @@ export const LABEL_LAYOUTS = {
     rows: 4,
     label: { width: 63.5, height: 72, padding: 4 },
     perSheet: 12,
+    ...metricsFor({ width: 63.5, height: 72, padding: 4 }),
   },
   compact: {
     id: 'compact',
@@ -43,10 +172,116 @@ export const LABEL_LAYOUTS = {
     page: null,
     label: { width: 48, height: null, padding: 3 },
     perSheet: 0,
+    ...metricsFor({ width: 48, height: null, padding: 3 }),
   },
 }
 
 export const DEFAULT_LAYOUT = 'a4_12'
+export const CUSTOM_LAYOUT = 'custom'
+
+/**
+ * The page a custom sheet is cut from.
+ *
+ * Unlike the die-cut layouts this one is printed on plain paper and cut by
+ * hand, so the margins are the printer's — almost nothing can print to the edge
+ * of A4, and a grid that assumed it could would lose its outermost column.
+ */
+export const CUSTOM_PAGE = { width: 210, height: 297, marginX: 8, marginY: 8 }
+
+/** How many labels per sheet the custom layout will accept. */
+export const CUSTOM_RANGE = { min: 1, max: 60 }
+
+/** Padding scales with the label, so a small one is not mostly margin. */
+const paddingFor = (width) => round(Math.max(1.5, Math.min(4, width / 16)), 1)
+
+/** The measurements a given column count produces, before it is judged. */
+function geometryFor(perSheet, columns, page) {
+  const rows = Math.ceil(perSheet / columns)
+  const width = floorTo((page.width - page.marginX * 2) / columns)
+  const height = floorTo((page.height - page.marginY * 2) / rows)
+  const padding = paddingFor(width)
+  return {
+    columns,
+    rows,
+    label: { width, height, padding },
+    cells: columns * rows,
+    spare: columns * rows - perSheet,
+    moduleWidth: Math.min(MODULE_WIDTH, (width - padding * 2) / SYMBOL_MODULES),
+  }
+}
+
+/** The proportions of the standard 12-up label, used as the shape to aim for. */
+const TARGET_ASPECT = Math.log(63.5 / 72)
+
+/**
+ * How bad a column count is, lower being better.
+ *
+ * The obvious heuristic — labels shaped like the page — is wrong here, and
+ * wrong in a way that costs money: it prefers tall narrow labels, and a narrow
+ * label is one the barcode has to shrink to fit. So the dominant term is how
+ * much the symbol has to give up, which is the one thing on the label that
+ * cannot be made smaller without becoming unscannable. Wasted cells come next,
+ * because they are wasted paper on every sheet of a long run, and the shape of
+ * the label only breaks ties.
+ */
+function scoreColumns(geometry, perSheet) {
+  const squeeze = (MODULE_WIDTH - geometry.moduleWidth) / MODULE_WIDTH
+  const waste = geometry.spare / perSheet
+  const shape = Math.abs(Math.log(geometry.label.width / geometry.label.height) - TARGET_ASPECT)
+  return squeeze * 3 + waste * 1.5 + shape * 0.35
+}
+
+/**
+ * The column count to use when the operator has not picked one.
+ *
+ * Every factorisation tiles the sheet, so this is a judgement rather than a
+ * constraint — but the judgement is made on printability, not looks. See
+ * `scoreColumns` for what it weighs.
+ */
+export function bestColumns(perSheet, page = CUSTOM_PAGE) {
+  let best = 1
+  let bestScore = Infinity
+  for (let columns = 1; columns <= perSheet; columns += 1) {
+    const score = scoreColumns(geometryFor(perSheet, columns, page), perSheet)
+    if (score < bestScore - 1e-9) {
+      bestScore = score
+      best = columns
+    }
+  }
+  return best
+}
+
+/**
+ * A layout for an arbitrary number of labels per sheet.
+ *
+ * The count is honoured exactly: the grid is sized to hold it, and where the
+ * count does not divide evenly by the columns the spare cells at the end are
+ * left empty on every page rather than the count being rounded to something
+ * that tiles neatly. Somebody who asked for seven per sheet gets seven.
+ */
+export function customLayout({ perSheet, columns = 0, page = CUSTOM_PAGE }) {
+  const count = Math.max(CUSTOM_RANGE.min, Math.min(CUSTOM_RANGE.max, Math.floor(Number(perSheet) || 1)))
+  const asked = Math.floor(Number(columns) || 0)
+  const cols = Math.max(1, Math.min(count, asked || bestColumns(count, page)))
+  const geometry = geometryFor(count, cols, page)
+  const { label, rows, spare } = geometry
+  return {
+    id: CUSTOM_LAYOUT,
+    name: 'Custom',
+    hint:
+      `${cols} across x ${rows} down · ${label.width} x ${label.height}mm labels` +
+      (spare > 0 ? ` · ${spare} cell${spare === 1 ? '' : 's'} left empty to keep the count at ${count}` : ''),
+    page,
+    columns: cols,
+    rows,
+    label,
+    perSheet: count,
+    // The grid has cells the count does not fill; the printed page must still
+    // reserve them so every label lands in the position it was measured for.
+    cells: geometry.cells,
+    ...metricsFor(label),
+  }
+}
 
 const escapeHtml = (value) =>
   String(value ?? '').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char])
@@ -78,12 +313,13 @@ export function buildLabels(products, copies = 1) {
  * remaining labels up into positions the die-cut sheet does not have, so the
  * blanks are what keeps the last page's stickers on their backing.
  */
-export function paginate(labels, perSheet) {
+export function paginate(labels, perSheet, cells = perSheet) {
   if (!perSheet) return [labels]
+  const pad = Math.max(perSheet, cells || 0)
   const pages = []
   for (let index = 0; index < labels.length; index += perSheet) {
     const page = labels.slice(index, index + perSheet)
-    while (page.length < perSheet) page.push(null)
+    while (page.length < pad) page.push(null)
     pages.push(page)
   }
   return pages
@@ -102,18 +338,22 @@ export function sheetSummary(labelCount, layout) {
  * module stays about geometry, and so a label whose code cannot be encoded
  * falls back to the digits instead of printing an empty box.
  */
-function labelHtml(entry, { currencySymbol, renderBarcode }) {
+function labelHtml(entry, { currencySymbol, renderBarcode, barcode, lines }) {
   if (!entry) return '<div class="label blank"></div>'
   const { productName, variant } = entry
-  const bars = renderBarcode(variant.barcode)
+  // The scale comes from the layout, never from the caller: a label printed at
+  // whatever size the calling screen felt like is the failure this file exists
+  // to prevent.
+  const bars = renderBarcode(variant.barcode, barcode)
   const variantLine = [variant.color, variant.size].filter(Boolean).join(' / ')
+  const show = lines || { name: true, variant: true, sku: true, price: true }
   return `
     <div class="label">
-      <strong>${escapeHtml(productName)}</strong>
-      ${variantLine ? `<span class="variant">${escapeHtml(variantLine)}</span>` : ''}
-      <span class="sku">${escapeHtml(variant.sku)}</span>
+      ${show.name ? `<strong>${escapeHtml(productName)}</strong>` : ''}
+      ${show.variant && variantLine ? `<span class="variant">${escapeHtml(variantLine)}</span>` : ''}
+      ${show.sku ? `<span class="sku">${escapeHtml(variant.sku)}</span>` : ''}
       <div class="bars">${bars || `<span class="code">${escapeHtml(variant.barcode)}</span>`}</div>
-      <span class="price">${escapeHtml(currencySymbol)}${Number(variant.price).toFixed(2)}</span>
+      ${show.price ? `<span class="price">${escapeHtml(currencySymbol)}${Number(variant.price).toFixed(2)}</span>` : ''}
     </div>`
 }
 
@@ -174,14 +414,16 @@ function compactCss(layout, guides) {
  * ever allowed to load beside it.
  */
 export function labelSheetHtml(labels, { layout, currencySymbol = '', guides = true, renderBarcode, title = 'Labels' }) {
-  const pages = paginate(labels, layout.perSheet)
+  const cell = { currencySymbol, renderBarcode, barcode: layout.barcode, lines: layout.lines }
+  const pages = paginate(labels, layout.perSheet, layout.cells || layout.perSheet)
   const body = layout.perSheet
     ? pages
-        .map((page) => `<div class="sheet">${page.map((entry) => labelHtml(entry, { currencySymbol, renderBarcode })).join('')}</div>`)
+        .map((page) => `<div class="sheet">${page.map((entry) => labelHtml(entry, cell)).join('')}</div>`)
         .join('')
-    : labels.map((entry) => labelHtml(entry, { currencySymbol, renderBarcode })).join('')
+    : labels.map((entry) => labelHtml(entry, cell)).join('')
 
   const layoutCss = layout.perSheet ? sheetCss(layout, guides) : compactCss(layout, guides)
+  const type = layout.type || { name: 9, variant: 8, sku: 7.5, price: 11 }
 
   /*
    * Bars must reach the paper as solid black: a printer's "save ink" pass
@@ -194,10 +436,10 @@ export function labelSheetHtml(labels, { layout, currencySymbol = '', guides = t
    */
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
     ${layoutCss}
-    .label strong { font-size: 9pt; line-height: 1.15; }
-    .variant { font-size: 8pt; }
-    .sku { font-family: monospace; font-size: 7.5pt; color: #555; }
-    .price { font-weight: 700; font-size: 11pt; margin-top: 1mm; }
+    .label strong { font-size: ${type.name}pt; line-height: 1.15; }
+    .variant { font-size: ${type.variant}pt; }
+    .sku { font-family: monospace; font-size: ${type.sku}pt; color: #555; }
+    .price { font-weight: 700; font-size: ${type.price}pt; margin-top: 1mm; }
     .bars { margin-top: 1.5mm; }
     .bars svg { display: block; }
     .code { font-family: monospace; font-size: 9pt; }

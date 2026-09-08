@@ -7,7 +7,19 @@ import { MAIN_LOCATION, uid, variantLabel } from '../../lib/format.js'
 import { getStock, hasExhibitionPrice, productCategories } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
 import { ean13Svg, generateBarcode, isValidEan13, usedBarcodes } from '../../lib/barcode.js'
-import { DEFAULT_LAYOUT, LABEL_LAYOUTS, buildLabels, labelSheetHtml, sheetSummary } from '../../lib/labels.js'
+import {
+  CUSTOM_LAYOUT,
+  CUSTOM_RANGE,
+  DEFAULT_LAYOUT,
+  LABEL_LAYOUTS,
+  MIN_MODULE_WIDTH,
+  MODULE_WIDTH,
+  bestColumns,
+  buildLabels,
+  customLayout,
+  labelSheetHtml,
+  sheetSummary,
+} from '../../lib/labels.js'
 
 /** Sentinel option value — never a real category name. */
 const NEW_CATEGORY = '\u0000new'
@@ -1073,8 +1085,25 @@ function LabelSheet({ products, onClose }) {
   const [layoutId, setLayoutId] = useState(DEFAULT_LAYOUT)
   const [copies, setCopies] = useState(1)
   const [guides, setGuides] = useState(true)
+  const [perSheet, setPerSheet] = useState(12)
+  // 0 means "work it out from the count" — the column count only becomes the
+  // operator's business when they are matching a sheet they already have.
+  const [columns, setColumns] = useState(0)
 
-  const layout = LABEL_LAYOUTS[layoutId]
+  const custom = layoutId === CUSTOM_LAYOUT
+  const layout = useMemo(
+    () => (custom ? customLayout({ perSheet, columns }) : LABEL_LAYOUTS[layoutId]),
+    [custom, layoutId, perSheet, columns],
+  )
+  const autoColumns = useMemo(() => (custom ? bestColumns(layout.perSheet) : 0), [custom, layout.perSheet])
+
+  /** What a label this size has had to give up, in the words the operator uses. */
+  const dropped = useMemo(() => {
+    const wording = { name: 'the product name', variant: 'the size and colour', sku: 'the SKU', price: 'the price' }
+    return Object.entries(wording)
+      .filter(([key]) => layout.lines && !layout.lines[key])
+      .map(([, label]) => label)
+  }, [layout])
   const labels = useMemo(() => buildLabels(products, copies), [products, copies])
   const summary = sheetSummary(labels.length, layout)
 
@@ -1094,9 +1123,9 @@ function LabelSheet({ products, onClose }) {
         layout,
         currencySymbol: state.settings.currencySymbol,
         guides,
-        // The scale is fixed here, never derived from the label size: bars
-        // stretched to fill their box are bars a scanner will not read.
-        renderBarcode: (code) => ean13Svg(code, { moduleWidth: 0.33, height: 16 }),
+        // The layout decides the scale, having already checked the symbol fits
+        // its label — bars stretched to suit a box are bars a scanner refuses.
+        renderBarcode: (code, options) => ean13Svg(code, options),
         title: products.length === 1 ? `${products[0].name} labels` : `${products.length} products — labels`,
       }),
     )
@@ -1130,7 +1159,7 @@ function LabelSheet({ products, onClose }) {
         <Field label="Sheet layout">
           <select
             className="select"
-            style={{ width: 210 }}
+            style={{ width: 190 }}
             value={layoutId}
             onChange={(event) => setLayoutId(event.target.value)}
           >
@@ -1139,8 +1168,50 @@ function LabelSheet({ products, onClose }) {
                 {entry.name}
               </option>
             ))}
+            <option value={CUSTOM_LAYOUT}>Custom number per sheet</option>
           </select>
         </Field>
+
+        {custom && (
+          <>
+            <Field label="Labels per sheet">
+              <input
+                className="input"
+                style={{ width: 120 }}
+                type="number"
+                min={CUSTOM_RANGE.min}
+                max={CUSTOM_RANGE.max}
+                value={perSheet}
+                onChange={(event) => setPerSheet(event.target.value)}
+                onBlur={() =>
+                  setPerSheet((current) =>
+                    Math.min(
+                      CUSTOM_RANGE.max,
+                      Math.max(CUSTOM_RANGE.min, Math.floor(Number(current) || CUSTOM_RANGE.min)),
+                    ),
+                  )
+                }
+              />
+            </Field>
+            <Field label="Columns">
+              <select
+                className="select"
+                style={{ width: 130 }}
+                value={columns}
+                onChange={(event) => setColumns(Number(event.target.value))}
+              >
+                {/* Reports what Auto would choose, not what is chosen — once
+                    overridden, `layout.columns` is the override. */}
+                <option value={0}>Auto ({autoColumns})</option>
+                {Array.from({ length: Math.min(8, layout.perSheet) }, (_, index) => index + 1).map((count) => (
+                  <option key={count} value={count}>
+                    {count} across
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </>
+        )}
         <Field label="Copies per variant">
           <input
             className="input"
@@ -1165,6 +1236,21 @@ function LabelSheet({ products, onClose }) {
       </div>
 
       <div className="small muted">{layout.hint}</div>
+
+      {dropped.length > 0 && (
+        <div className="badge badge-warn" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          Too short for everything — {dropped.join(' and ')} {dropped.length === 1 ? 'is' : 'are'} left off so the
+          barcode is not clipped. Use fewer per sheet to fit {dropped.length === 1 ? 'it' : 'them'} back on.
+        </div>
+      )}
+
+      {!layout.barcode.scannable && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          These labels are too narrow for a readable barcode — at {layout.label.width}mm the symbol prints below
+          the {Math.round((MIN_MODULE_WIDTH / MODULE_WIDTH) * 100)}% minimum a scanner can resolve. Use fewer per
+          sheet, or {layout.columns > 1 ? 'fewer columns' : 'a wider label'}.
+        </div>
+      )}
 
       <div className="badge badge-brand" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
         {labels.length} label{labels.length === 1 ? '' : 's'}
