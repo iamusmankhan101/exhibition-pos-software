@@ -46,7 +46,7 @@ export function symbolWidth(moduleWidth) {
 }
 
 /** Typography at the reference label size, in points. */
-const BASE_TYPE = { name: 9, variant: 8, sku: 7.5, price: 11 }
+const BASE_TYPE = { name: 9, color: 8, sku: 7.5, price: 11 }
 const REFERENCE_WIDTH = 63.5
 
 const round = (value, places = 2) => Number(value.toFixed(places))
@@ -87,10 +87,10 @@ const LINE_GAP = 0.6
  * The barcode is never in this list: it is the entire reason the label exists,
  * and a label whose bars are clipped by an overflowing product name is worse
  * than one with no name at all. Of the text, the price and the name are what a
- * customer and a salesperson read off the shelf, so the size and the SKU — both
- * recoverable by scanning — go first.
+ * customer and a salesperson read off the shelf, so the colour and the SKU —
+ * both recoverable by scanning — go first.
  */
-const DROP_ORDER = ['variant', 'sku', 'name', 'price']
+const DROP_ORDER = ['color', 'sku', 'name', 'price']
 
 /**
  * The barcode scale, text sizes, and which lines actually fit on this label.
@@ -111,7 +111,7 @@ function metricsFor(label) {
 
   const type = {
     name: round(BASE_TYPE.name * scale, 1),
-    variant: round(BASE_TYPE.variant * scale, 1),
+    color: round(BASE_TYPE.color * scale, 1),
     sku: round(BASE_TYPE.sku * scale, 1),
     price: round(BASE_TYPE.price * scale, 1),
   }
@@ -121,7 +121,7 @@ function metricsFor(label) {
    * there. A gridded one does: its cells are a fixed size, and content taller
    * than the cell is clipped rather than pushed onto another page.
    */
-  const lines = { name: true, variant: true, sku: true, price: true }
+  const lines = { name: true, color: true, sku: true, price: true }
   if (label.height) {
     const room = label.height - label.padding * 2
     const used = () =>
@@ -345,12 +345,11 @@ function labelHtml(entry, { currencySymbol, renderBarcode, barcode, lines }) {
   // whatever size the calling screen felt like is the failure this file exists
   // to prevent.
   const bars = renderBarcode(variant.barcode, barcode)
-  const variantLine = [variant.color, variant.size].filter(Boolean).join(' / ')
-  const show = lines || { name: true, variant: true, sku: true, price: true }
+  const show = lines || { name: true, color: true, sku: true, price: true }
   return `
     <div class="label">
       ${show.name ? `<strong>${escapeHtml(productName)}</strong>` : ''}
-      ${show.variant && variantLine ? `<span class="variant">${escapeHtml(variantLine)}</span>` : ''}
+      ${show.color && variant.color ? `<span class="color">${escapeHtml(variant.color)}</span>` : ''}
       ${show.sku ? `<span class="sku">${escapeHtml(variant.sku)}</span>` : ''}
       <div class="bars">${bars || `<span class="code">${escapeHtml(variant.barcode)}</span>`}</div>
       ${show.price ? `<span class="price">${escapeHtml(currencySymbol)}${Number(variant.price).toFixed(2)}</span>` : ''}
@@ -423,7 +422,7 @@ export function labelSheetHtml(labels, { layout, currencySymbol = '', guides = t
     : labels.map((entry) => labelHtml(entry, cell)).join('')
 
   const layoutCss = layout.perSheet ? sheetCss(layout, guides) : compactCss(layout, guides)
-  const type = layout.type || { name: 9, variant: 8, sku: 7.5, price: 11 }
+  const type = layout.type || { name: 9, color: 8, sku: 7.5, price: 11 }
 
   /*
    * Bars must reach the paper as solid black: a printer's "save ink" pass
@@ -437,7 +436,7 @@ export function labelSheetHtml(labels, { layout, currencySymbol = '', guides = t
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
     ${layoutCss}
     .label strong { font-size: ${type.name}pt; line-height: 1.15; }
-    .variant { font-size: ${type.variant}pt; }
+    .color { font-size: ${type.color}pt; }
     .sku { font-family: monospace; font-size: ${type.sku}pt; color: #555; }
     .price { font-weight: 700; font-size: ${type.price}pt; margin-top: 1mm; }
     .bars { margin-top: 1.5mm; }

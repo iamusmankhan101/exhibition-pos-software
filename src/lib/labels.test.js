@@ -289,13 +289,13 @@ describe('choosing the columns', () => {
 
 describe('a label too short for everything on it', () => {
   it('keeps all four lines at a comfortable size', () => {
-    expect(LABEL_LAYOUTS.a4_12.lines).toEqual({ name: true, variant: true, sku: true, price: true })
-    expect(customLayout({ perSheet: 24 }).lines).toEqual({ name: true, variant: true, sku: true, price: true })
+    expect(LABEL_LAYOUTS.a4_12.lines).toEqual({ name: true, color: true, sku: true, price: true })
+    expect(customLayout({ perSheet: 24 }).lines).toEqual({ name: true, color: true, sku: true, price: true })
   })
 
   it('drops the recoverable lines first and the barcode never', () => {
     const dense = customLayout({ perSheet: 48 })
-    expect(dense.lines.variant).toBe(false)
+    expect(dense.lines.color).toBe(false)
     expect(dense.lines.sku).toBe(false)
     // Whatever else goes, the bars are still drawn at full width.
     expect(dense.barcode.moduleWidth).toBe(MODULE_WIDTH)
@@ -313,7 +313,7 @@ describe('a label too short for everything on it', () => {
   })
 
   it('drops nothing on a flowing layout, which has no height to overflow', () => {
-    expect(LABEL_LAYOUTS.compact.lines).toEqual({ name: true, variant: true, sku: true, price: true })
+    expect(LABEL_LAYOUTS.compact.lines).toEqual({ name: true, color: true, sku: true, price: true })
   })
 
   it('fits the content it keeps inside the label', () => {
@@ -325,5 +325,46 @@ describe('a label too short for everything on it', () => {
         .reduce((sum, [line]) => sum + layout.type[line] * 1.25 * 0.3528 + 0.6, 0)
       expect(layout.barcode.height + 4.4 + text).toBeLessThanOrEqual(room + 1e-6)
     }
+  })
+})
+
+describe('what a label says about the variant', () => {
+  const render = (over) =>
+    labelSheetHtml(buildLabels([{ id: 'p', name: 'Silk Scarf', variants: [variant('a', over)] }], 1), {
+      layout: LABEL_LAYOUTS.a4_12,
+      currencySymbol: '£',
+      renderBarcode: () => '<svg></svg>',
+    })
+
+  it('prints the colour but never the size', () => {
+    const html = render({ color: 'Emerald', size: 'XL' })
+    expect(html).toContain('Emerald')
+    expect(html).not.toContain('XL')
+  })
+
+  it('leaves the line out entirely when there is no colour', () => {
+    const html = render({ color: '', size: 'XL' })
+    expect(html).not.toContain('class="color"')
+    expect(html).not.toContain('XL')
+  })
+
+  it('still tells two sizes apart by their SKU and barcode', () => {
+    const product = {
+      id: 'p',
+      name: 'Silk Scarf',
+      variants: [
+        variant('a', { color: 'Emerald', size: 'S', sku: 'TSS-EME-001', barcode: '2001234567895' }),
+        variant('b', { color: 'Emerald', size: 'L', sku: 'TSS-EME-002', barcode: '2009876543210' }),
+      ],
+    }
+    const html = labelSheetHtml(buildLabels([product], 1), {
+      layout: LABEL_LAYOUTS.a4_12,
+      currencySymbol: '£',
+      renderBarcode: (code) => `<svg data-code="${code}"></svg>`,
+    })
+    expect(html).toContain('TSS-EME-001')
+    expect(html).toContain('TSS-EME-002')
+    expect(html).toContain('data-code="2001234567895"')
+    expect(html).toContain('data-code="2009876543210"')
   })
 })

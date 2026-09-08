@@ -1099,7 +1099,7 @@ function LabelSheet({ products, onClose }) {
 
   /** What a label this size has had to give up, in the words the operator uses. */
   const dropped = useMemo(() => {
-    const wording = { name: 'the product name', variant: 'the size and colour', sku: 'the SKU', price: 'the price' }
+    const wording = { name: 'the product name', color: 'the colour', sku: 'the SKU', price: 'the price' }
     return Object.entries(wording)
       .filter(([key]) => layout.lines && !layout.lines[key])
       .map(([, label]) => label)
@@ -1280,8 +1280,11 @@ function LabelSheet({ products, onClose }) {
             style={{ background: 'var(--surface-2)', padding: 12, textAlign: 'center', gap: 2 }}
           >
             {products.length > 1 && <div style={{ fontWeight: 620, fontSize: 13.5 }}>{product.name}</div>}
+            {/* The label carries the colour but not the size, so the preview
+                does the same. The SKU underneath is what tells two sizes of the
+                same colour apart. */}
             <div className={products.length > 1 ? 'small muted' : ''} style={{ fontWeight: 620, fontSize: 13.5 }}>
-              {[variant.color, variant.size].filter(Boolean).join(' / ')}
+              {variant.color}
             </div>
             <div className="small muted mono">{variant.sku}</div>
             {ean13Svg(variant.barcode) ? (
