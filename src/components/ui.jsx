@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { colorFor, initials, softColorFor } from '../lib/format.js'
+import { fileToDataUrl } from '../lib/image.js'
 import { useApp } from '../lib/store.jsx'
 
 export function Modal({ open, onClose, title, subtitle, children, footer, size = '' }) {
@@ -243,41 +244,14 @@ export function SyncPill() {
  */
 export function ImagePicker({ value, onChange, name, fit = 'cover' }) {
   const [busy, setBusy] = useState(false)
-  const contain = fit === 'contain'
 
   const handleFile = (file) => {
     if (!file) return
     setBusy(true)
-    const reader = new FileReader()
-    reader.onload = () => {
-      const image = new Image()
-      image.onload = () => {
-        const size = 320
-        const canvas = document.createElement('canvas')
-        const scale = contain
-          ? Math.min(size / image.width, size / image.height, 1)
-          : Math.max(size / image.width, size / image.height)
-        const width = image.width * scale
-        const height = image.height * scale
-        // Contained: the canvas is the image, so nothing is cropped and no
-        // background is invented behind a transparent logo.
-        canvas.width = contain ? Math.round(width) : size
-        canvas.height = contain ? Math.round(height) : size
-        const ctx = canvas.getContext('2d')
-        ctx.drawImage(
-          image,
-          (canvas.width - width) / 2,
-          (canvas.height - height) / 2,
-          width,
-          height,
-        )
-        onChange(contain ? canvas.toDataURL('image/png') : canvas.toDataURL('image/jpeg', 0.78))
-        setBusy(false)
-      }
-      image.onerror = () => setBusy(false)
-      image.src = reader.result
-    }
-    reader.readAsDataURL(file)
+    fileToDataUrl(file, { fit })
+      .then(onChange)
+      .catch(() => {})
+      .finally(() => setBusy(false))
   }
 
   return (
