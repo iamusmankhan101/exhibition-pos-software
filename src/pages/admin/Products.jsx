@@ -7,6 +7,7 @@ import { MAIN_LOCATION, uid, variantLabel } from '../../lib/format.js'
 import { getStock, hasExhibitionPrice, productCategories } from '../../lib/domain.js'
 import { exportCsv } from '../../lib/csv.js'
 import { ean13Svg, generateBarcode, isValidEan13, usedBarcodes } from '../../lib/barcode.js'
+import { DEFAULT_LAYOUT, LABEL_LAYOUTS, buildLabels, labelSheetHtml, sheetSummary } from '../../lib/labels.js'
 
 /** Sentinel option value — never a real category name. */
 const NEW_CATEGORY = '\u0000new'
@@ -116,6 +117,12 @@ export default function Products() {
         <button className="btn" onClick={() => exportCsv('tareez-products', exportColumns, rows)}>
           Export
         </button>
+        {/* Whatever the search and category filter have narrowed to — printing
+            "the scarves" is a filter away, and needs no delete permission the
+            way the tick-box selection does. */}
+        <button className="btn" disabled={rows.length === 0} onClick={() => setLabels(rows.map((row) => row.product))}>
+          Print labels
+        </button>
         {barcodeGaps > 0 && (
           <button className="btn" onClick={() => setBarcodes(true)}>
             Barcodes ({barcodeGaps})
@@ -221,7 +228,7 @@ export default function Products() {
                           Stock
                         </button>
                       )}
-                      <button className="btn btn-ghost btn-sm" onClick={() => setLabels(product)}>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setLabels([product])}>
                         Labels
                       </button>
                       {canDelete && (
@@ -258,7 +265,7 @@ export default function Products() {
         />
       )}
 
-      {labels && <LabelSheet product={labels} onClose={() => setLabels(null)} />}
+      {labels?.length > 0 && <LabelSheet products={labels} onClose={() => setLabels(null)} />}
 
       {stocking && <StockModal product={stocking} onClose={() => setStocking(null)} />}
 
@@ -269,7 +276,16 @@ export default function Products() {
           selection={selection}
           noun="product"
           onDelete={() => setDeleting(state.products.filter((entry) => selection.isSelected(entry.id)))}
-        />
+        >
+          {/* Printed in catalogue order rather than the order they were ticked,
+              so a sheet is easy to check against the products list. */}
+          <button
+            className="btn btn-sm"
+            onClick={() => setLabels(state.products.filter((entry) => selection.isSelected(entry.id)))}
+          >
+            Labels
+          </button>
+        </BulkBar>
       )}
 
       {deleting && (
@@ -1042,66 +1058,48 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
 
 /* ---------------------------------------------------------------- labels */
 
-function LabelSheet({ product, onClose }) {
+/**
+ * The label printer, for one product or for a whole selection.
+ *
+ * The controls here are the ones that change what comes out of the printer and
+ * nothing else: which sheet is in the tray, how many stickers per variant, and
+ * whether the cut lines are wanted. Everything about how a label is drawn lives
+ * in `labels.js`, so the preview below and the printed page are built from the
+ * same description of the sheet.
+ */
+function LabelSheet({ products, onClose }) {
   const { state } = useApp()
   const currency = useCurrency()
+  const [layoutId, setLayoutId] = useState(DEFAULT_LAYOUT)
+  const [copies, setCopies] = useState(1)
+  const [guides, setGuides] = useState(true)
+
+  const layout = LABEL_LAYOUTS[layoutId]
+  const labels = useMemo(() => buildLabels(products, copies), [products, copies])
+  const summary = sheetSummary(labels.length, layout)
+
+  // One card per variant, not per sticker: a preview that repeated itself
+  // twelve times would say nothing the count above it does not already say.
+  const previews = useMemo(
+    () => products.flatMap((product) => product.variants.map((variant) => ({ product, variant }))),
+    [products],
+  )
+  const unprintable = previews.filter(({ variant }) => !ean13Svg(variant.barcode)).length
 
   const print = () => {
     const win = window.open('', '_blank')
     if (!win) return
-    const escape = (value) =>
-      String(value ?? '').replace(/[&<>]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char])
-
-    /*
-     * The bars print at a fixed millimetre scale, never scaled to fit the label:
-     * a barcode resized to suit its box is a barcode that will not scan. The
-     * digits sit underneath for the case the bars cannot cover — a scuffed tag
-     * that has to be keyed in by hand.
-     */
-    const cards = product.variants
-      .map((variant) => {
-        const bars = ean13Svg(variant.barcode, { moduleWidth: 0.33, height: 16 })
-        return `
-        <div class="label">
-          <strong>${escape(product.name)}</strong>
-          <span class="variant">${escape([variant.color, variant.size].filter(Boolean).join(' / '))}</span>
-          <span class="sku">${escape(variant.sku)}</span>
-          <div class="bars">${bars || `<span class="code">${escape(variant.barcode)}</span>`}</div>
-          <span class="price">${escape(state.settings.currencySymbol)}${Number(variant.price).toFixed(2)}</span>
-        </div>`
-      })
-      .join('')
-
-    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${escape(product.name)} labels</title><style>
-      body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; padding: 10mm; display: flex; flex-wrap: wrap; gap: 5mm; }
-      .label {
-        width: 48mm; border: 1px dashed #bbb; border-radius: 2mm; padding: 3mm;
-        display: flex; flex-direction: column; align-items: center; text-align: center; gap: 0.6mm;
-      }
-      .label strong { font-size: 9pt; line-height: 1.2; }
-      .variant { font-size: 8pt; }
-      .sku { font-family: monospace; font-size: 7.5pt; color: #555; }
-      .price { font-weight: 700; font-size: 11pt; margin-top: 1mm; }
-      .bars { margin-top: 1.5mm; }
-      .bars svg { display: block; }
-      .code { font-family: monospace; font-size: 9pt; }
-      /*
-       * Bars must reach the paper as solid black: a printer's "save ink" pass
-       * renders them grey and a scanner reads nothing, so print-color-adjust
-       * asks for the colours exactly as authored.
-       *
-       * The two fills are named separately on purpose. Forcing every rect black
-       * also blackens the quiet-zone background the barcode draws behind
-       * itself, which buries the bars and prints a solid block.
-       */
-      @media print {
-        body { padding: 5mm; }
-        .label { break-inside: avoid; border-color: #ddd; }
-        .bars svg { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        .bars svg .ean13-bars rect { fill: #000 !important; }
-        .bars svg .ean13-bg { fill: #fff !important; }
-      }
-    </style></head><body>${cards}</body></html>`)
+    win.document.write(
+      labelSheetHtml(labels, {
+        layout,
+        currencySymbol: state.settings.currencySymbol,
+        guides,
+        // The scale is fixed here, never derived from the label size: bars
+        // stretched to fill their box are bars a scanner will not read.
+        renderBarcode: (code) => ean13Svg(code, { moduleWidth: 0.33, height: 16 }),
+        title: products.length === 1 ? `${products[0].name} labels` : `${products.length} products — labels`,
+      }),
+    )
     win.document.close()
     setTimeout(() => win.print(), 400)
   }
@@ -1110,27 +1108,93 @@ function LabelSheet({ product, onClose }) {
     <Modal
       open
       onClose={onClose}
+      size="lg"
       title="Product labels"
-      subtitle={`${product.name} · one barcode per variant`}
+      subtitle={
+        products.length === 1
+          ? `${products[0].name} · one barcode per variant`
+          : `${products.length} products · one barcode per variant`
+      }
       footer={
         <>
           <button className="btn" onClick={onClose}>
             Close
           </button>
-          <button className="btn btn-primary" onClick={print}>
-            Print labels
+          <button className="btn btn-primary" onClick={print} disabled={labels.length === 0}>
+            Print {labels.length} label{labels.length === 1 ? '' : 's'}
           </button>
         </>
       }
     >
+      <div className="row wrap" style={{ gap: 12, alignItems: 'flex-end' }}>
+        <Field label="Sheet layout">
+          <select
+            className="select"
+            style={{ width: 210 }}
+            value={layoutId}
+            onChange={(event) => setLayoutId(event.target.value)}
+          >
+            {Object.values(LABEL_LAYOUTS).map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Copies per variant">
+          <input
+            className="input"
+            style={{ width: 120 }}
+            type="number"
+            min="1"
+            max="200"
+            value={copies}
+            onChange={(event) => setCopies(event.target.value)}
+            onBlur={() => setCopies((current) => Math.min(200, Math.max(1, Math.floor(Number(current) || 1))))}
+          />
+        </Field>
+        <label className="row" style={{ gap: 7, paddingBottom: 9 }}>
+          <input
+            type="checkbox"
+            className="row-check"
+            checked={guides}
+            onChange={(event) => setGuides(event.target.checked)}
+          />
+          <span className="small">Show cut guides</span>
+        </label>
+      </div>
+
+      <div className="small muted">{layout.hint}</div>
+
+      <div className="badge badge-brand" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+        {labels.length} label{labels.length === 1 ? '' : 's'}
+        {summary.perSheet > 0 && (
+          <>
+            {' · '}
+            {summary.sheets} sheet{summary.sheets === 1 ? '' : 's'}
+            {summary.blanks > 0 &&
+              ` · ${summary.blanks} unused label${summary.blanks === 1 ? '' : 's'} on the last sheet`}
+          </>
+        )}
+      </div>
+
+      {unprintable > 0 && (
+        <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
+          {unprintable} variant{unprintable === 1 ? ' has a barcode that' : 's have barcodes that'} cannot be
+          encoded — use Barcodes on the products list to regenerate {unprintable === 1 ? 'it' : 'them'} before
+          printing.
+        </div>
+      )}
+
       <div className="grid grid-2" style={{ gap: 10 }}>
-        {product.variants.map((variant) => (
+        {previews.map(({ product, variant }) => (
           <div
             key={variant.id}
             className="card"
             style={{ background: 'var(--surface-2)', padding: 12, textAlign: 'center', gap: 2 }}
           >
-            <div style={{ fontWeight: 620, fontSize: 13.5 }}>
+            {products.length > 1 && <div style={{ fontWeight: 620, fontSize: 13.5 }}>{product.name}</div>}
+            <div className={products.length > 1 ? 'small muted' : ''} style={{ fontWeight: 620, fontSize: 13.5 }}>
               {[variant.color, variant.size].filter(Boolean).join(' / ')}
             </div>
             <div className="small muted mono">{variant.sku}</div>
@@ -1151,7 +1215,7 @@ function LabelSheet({ product, onClose }) {
         ))}
       </div>
       <p className="small muted" style={{ margin: 0 }}>
-        Print at 100% — scaling a barcode to fit the paper is what stops it scanning.
+        Print at 100% with no "fit to page" — scaling a barcode is what stops it scanning.
       </p>
     </Modal>
   )
