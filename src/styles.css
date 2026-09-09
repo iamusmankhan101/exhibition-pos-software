@@ -579,10 +579,50 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
 
 /* ================================================================ scanner */
 
-.scanner-shell { position: relative; border-radius: var(--r-lg); overflow: hidden; background: #0d0f12; aspect-ratio: 4 / 3; }
-.scanner-shell video { width: 100% !important; height: 100% !important; object-fit: cover; }
+/*
+ * The video is sized by html5-qrcode, not by us, and that is load-bearing.
+ *
+ * The library sets only `style.width` on the <video> and lets the height fall
+ * out of the stream's own aspect ratio. Its capture step then maps the on-screen
+ * scan box onto stream pixels with `videoWidth / clientWidth` and
+ * `videoHeight / clientHeight` — two ratios that are only equal, and the
+ * mapping only correct, while the element's box has the same shape as the
+ * stream.
+ *
+ * This used to force `width: 100% !important; height: 100% !important` with
+ * `object-fit: cover` into a 4:3 shell. A phone handing back a 16:9 stream
+ * therefore got two different ratios and a cropped picture, so the region the
+ * decoder read was not the region under the guide box: the camera showed a
+ * perfect live preview of a barcode it was never actually looking at. Hence a
+ * scanner that opens, previews, and never reads anything.
+ *
+ * So: no size, no object-fit, and no fixed aspect on the shell. The shell takes
+ * its height from the video, and `min-height` only holds the box open while the
+ * camera is still starting or has failed.
+ */
+.scanner-shell {
+  position: relative; border-radius: var(--r-lg); overflow: hidden; background: #0d0f12;
+  display: grid; place-items: center;
+}
+/* Only while there is no video to give the box a height of its own. Applying
+   it once the camera is live would pad the shell past the picture and leave
+   black bands the operator reads as part of the viewfinder. */
+.scanner-shell.is-idle { min-height: 240px; }
+.scanner-shell video { display: block; }
 .scanner-shell #reader__scan_region img { display: none; }
-.scan-frame { position: absolute; inset: 16% 12%; border: 2px solid var(--brand); border-radius: 14px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.42); pointer-events: none; }
+/*
+ * The guide box is html5-qrcode's own, not one of ours.
+ *
+ * Only what falls inside `config.qrbox` is handed to the decoder, so a frame
+ * drawn from our own percentages is a standing invitation to aim at the wrong
+ * place — it agrees with the decoded region only until either side is edited.
+ * The library already draws a shaded surround at exactly that region, so that
+ * is what the operator now aims by, and the two cannot drift apart because
+ * there is only one of them. These rules restyle it; they never resize it.
+ */
+#qr-shaded-region { border-radius: var(--r-lg); }
+#qr-shaded-region div { background-color: var(--brand) !important; }
+
 .scan-hint { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 12.5px; color: #fff; text-shadow: 0 1px 4px #000; }
 
 /* ================================================================= modal */

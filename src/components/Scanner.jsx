@@ -37,7 +37,16 @@ export default function Scanner({ onDetected, onError }) {
 
   useEffect(() => {
     let cancelled = false
-    const scanner = new Html5Qrcode(REGION_ID, { formatsToSupport: FORMATS, verbose: false })
+    const scanner = new Html5Qrcode(REGION_ID, {
+      formatsToSupport: FORMATS,
+      // Use the browser's own barcode engine where it exists, keeping ZXing as
+      // the fallback. ZXing decodes a QR code from almost anything but is far
+      // fussier about a 1D symbol — the exact case a till needs most — and the
+      // native detector reads an EAN-13 off a phone camera that ZXing gives up
+      // on. `isSupported()` guards it, so nothing changes where it is missing.
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      verbose: false,
+    })
     scannerRef.current = scanner
 
     const handle = (decoded) => {
@@ -51,14 +60,37 @@ export default function Scanner({ onDetected, onError }) {
 
     scanner
       .start(
-        { facingMode: 'environment' },
+        {
+          facingMode: 'environment',
+          // A barcode is resolved by the width of its narrowest bar, so the
+          // stream's resolution is the ceiling on what can be read at all. The
+          // default is often 640x480, at which the bars of an EAN-13 held at
+          // arm's length land under a pixel apiece. Asked for as `ideal`, so a
+          // camera that cannot manage it still starts.
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
         {
           fps: 12,
-          qrbox: (viewWidth, viewHeight) => {
-            const edge = Math.floor(Math.min(viewWidth, viewHeight) * 0.78)
-            return { width: edge, height: Math.floor(edge * 0.62) }
-          },
-          aspectRatio: 1.334,
+          /*
+           * A box shaped like the thing being scanned.
+           *
+           * Only what falls inside this is handed to the decoder, and an EAN-13
+           * is a wide, short symbol that has to arrive whole — quiet zones
+           * included, since a scanner that cannot see the pale margin does not
+           * read the code. The old box was nearly square and 78% of the
+           * *smaller* side, which on a portrait phone is a narrow window that a
+           * label has to be pushed away from the lens to fit inside — and by
+           * then the bars are too small to resolve. Wide and shallow lets the
+           * operator fill the frame with the label instead.
+           */
+          qrbox: (viewWidth, viewHeight) => ({
+            width: Math.max(120, Math.floor(viewWidth * 0.92)),
+            height: Math.max(80, Math.floor(Math.min(viewHeight * 0.6, viewWidth * 0.45))),
+          }),
+          // No `aspectRatio`: the shell now takes its shape from whatever the
+          // camera gives, so there is nothing left to match and over-
+          // constraining the request only risks a camera refusing to start.
           disableFlip: false,
         },
         handle,
@@ -102,13 +134,17 @@ export default function Scanner({ onDetected, onError }) {
 
   return (
     <div className="stack-sm">
-      <div className="scanner-shell">
-        <div id={REGION_ID} style={{ width: '100%', height: '100%' }} />
+      <div className={`scanner-shell ${status === 'running' ? '' : 'is-idle'}`}>
+        {/* Width only: the library sets the video's width from this element
+            and lets its height follow the stream, which is what keeps its
+            scan-region maths honest. Forcing a height here would reintroduce
+            the mismatch described in `.scanner-shell`. */}
+        <div id={REGION_ID} style={{ width: '100%' }} />
+        {/* No frame of our own: html5-qrcode shades the region it actually
+            decodes, and a second hand-positioned box could only ever agree
+            with it by coincidence. */}
         {status === 'running' && (
-          <>
-            <div className="scan-frame" />
-            <div className="scan-hint">Point the camera at the barcode or QR label</div>
-          </>
+          <div className="scan-hint">Line the barcode up inside the box</div>
         )}
         {status === 'starting' && (
           <div
