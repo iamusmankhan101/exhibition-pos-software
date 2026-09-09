@@ -1191,6 +1191,12 @@ function LabelSheet({ products, onClose }) {
 
         {thermal && (
           <>
+            {/*
+              Stepped in hundredths, not halves: the stock is imperial, so the
+              sizes actually sold land on hundredths of a millimetre — 2.25in is
+              57.15mm — and a half-millimetre step could neither reach them nor
+              hold the default once the spinner was touched.
+            */}
             <Field label="Label width (mm)">
               <input
                 className="input"
@@ -1198,7 +1204,7 @@ function LabelSheet({ products, onClose }) {
                 type="number"
                 min={THERMAL_RANGE.minWidth}
                 max={THERMAL_RANGE.maxWidth}
-                step="0.5"
+                step="0.05"
                 value={roll.width}
                 onChange={(event) => setRoll((current) => ({ ...current, width: event.target.value }))}
                 onBlur={() => setRoll(({ width, height }) => clampRoll({ width, height }))}
@@ -1211,7 +1217,7 @@ function LabelSheet({ products, onClose }) {
                 type="number"
                 min={THERMAL_RANGE.minHeight}
                 max={THERMAL_RANGE.maxHeight}
-                step="0.5"
+                step="0.05"
                 value={roll.height}
                 onChange={(event) => setRoll((current) => ({ ...current, height: event.target.value }))}
                 onBlur={() => setRoll(({ width, height }) => clampRoll({ width, height }))}

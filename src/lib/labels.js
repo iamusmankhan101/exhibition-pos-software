@@ -302,10 +302,17 @@ export const THERMAL_LAYOUT = 'thermal'
  * The roll this shop prints on, in millimetres.
  *
  * Label stock is sold in inches and measured here in millimetres, so the number
- * is written out rather than rounded: a 2 x 2in label is 50.8mm exactly, and
- * 50mm would be half a millimetre of drift per label against the gap sensor.
+ * is written out rather than rounded: 2.25 x 1.75in is 57.15 x 44.45mm exactly,
+ * and rounding either to the nearest half-millimetre would be drift per label
+ * against the printer's gap sensor — which accumulates over a run rather than
+ * cancelling out.
+ *
+ * Landscape, unlike the square stock this used to default to, and that is the
+ * shape the barcode wants: an EAN-13 at nominal is 38.61mm of symbol, so the
+ * extra width is spent on quiet zone the scanner needs while the lost height
+ * comes off text that `metricsFor` can shrink or drop.
  */
-export const DEFAULT_THERMAL = { width: 50.8, height: 50.8 }
+export const DEFAULT_THERMAL = { width: 57.15, height: 44.45 }
 
 /** What a roll printer will accept — beyond this it is sheet stock, not a roll. */
 export const THERMAL_RANGE = { minWidth: 20, maxWidth: 120, minHeight: 10, maxHeight: 200 }

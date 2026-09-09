@@ -456,16 +456,21 @@ describe('a thermal roll', () => {
       width: THERMAL_RANGE.maxWidth,
       height: THERMAL_RANGE.maxHeight,
     })
-    expect(thermalLayout({ width: 'nonsense', height: 'nonsense' }).label).toMatchObject({ width: 50.8, height: 50.8 })
-    expect(thermalLayout().label).toMatchObject({ width: 50.8, height: 50.8 })
+    expect(thermalLayout({ width: 'nonsense', height: 'nonsense' }).label).toMatchObject({ width: 57.15, height: 44.45 })
+    expect(thermalLayout().label).toMatchObject({ width: 57.15, height: 44.45 })
   })
 
-  it('defaults to a 2 x 2in label, carried at nominal with nothing dropped', () => {
+  it('defaults to a 2.25 x 1.75in label, carried at nominal with nothing dropped', () => {
     const layout = thermalLayout()
-    // 2in is 50.8mm, not 50 — the stock is imperial and the drift would be
-    // half a millimetre per label against the printer's gap sensor.
-    expect(layout.label).toMatchObject({ width: 50.8, height: 50.8 })
+    // The stock is imperial: 2.25in is 57.15mm and 1.75in is 44.45mm, neither
+    // of which is a round millimetre. Rounding to the nearest half — 57 x 44.5 —
+    // would be drift per label against the printer's gap sensor, and it
+    // accumulates over a run rather than cancelling out.
+    expect(layout.label).toMatchObject({ width: 57.15, height: 44.45 })
+    // The shorter label still clears the barcode: 38.61mm of symbol at nominal
+    // inside 57.15mm of stock, with every text line still fitting under it.
     expect(layout.barcode.moduleWidth).toBe(MODULE_WIDTH)
+    expect(layout.barcode.scannable).toBe(true)
     expect(layout.lines).toEqual({ name: true, color: true, sku: true, price: true })
   })
 
