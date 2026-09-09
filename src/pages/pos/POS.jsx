@@ -15,6 +15,7 @@ import {
   sellingPrice,
 } from '../../lib/domain.js'
 import { formatTime, money, variantLabel } from '../../lib/format.js'
+import { createWedgeReader } from '../../lib/wedge.js'
 import { Field, Modal, SyncPill, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import CheckoutModal from './CheckoutModal.jsx'
@@ -242,8 +243,38 @@ export default function POS() {
     [state, addVariant, actions],
   )
 
-  // A hardware/bluetooth scanner behaves like a keyboard: it types fast and
-  // finishes with Enter. Search box handles that natively via onSubmit.
+  /*
+   * A hardware/bluetooth scanner behaves like a keyboard: it types fast and
+   * finishes with Enter. The search box handles that natively via `onSubmit` —
+   * but only while the cursor is actually in it, which on a till it usually is
+   * not. Tapping a product tile, opening the cart or closing a modal all move
+   * focus to the body, and from there every scan was delivered to nothing at
+   * all: the gun beeps, the operator assumes it scanned, and no line is added.
+   *
+   * So the burst is caught at the document instead, recognised by how fast it
+   * arrives rather than by where it landed. Keystrokes aimed at a real field
+   * are left alone, so the search box and the manual-entry fallback both still
+   * behave exactly as before.
+   */
+  const scanRef = useRef(handleScan)
+  scanRef.current = handleScan
+
+  useEffect(() => {
+    // The camera modal is its own scanner, and the rest are modals where adding
+    // a line behind the operator's back would be worse than ignoring the scan.
+    const idle = !scanOpen && !checkoutOpen && !completed && !variantPick && !discountItem && !oversellRequest
+    if (!idle) return undefined
+
+    // Read through a ref rather than depending on `handleScan`, which changes
+    // on every cart edit. Re-subscribing would build a new reader and throw
+    // away a burst already in progress — a scan lands in well under the time it
+    // takes to render, so that is a dropped item, not a theoretical race.
+    const reader = createWedgeReader({ onScan: (code) => scanRef.current(code) })
+    const onKeyDown = (event) => reader.handle(event)
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [scanOpen, checkoutOpen, completed, variantPick, discountItem, oversellRequest])
+
   const submitSearch = (event) => {
     event.preventDefault()
     const code = query.trim()
