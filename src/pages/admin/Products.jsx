@@ -11,14 +11,19 @@ import {
   CUSTOM_LAYOUT,
   CUSTOM_RANGE,
   DEFAULT_LAYOUT,
+  DEFAULT_THERMAL,
   LABEL_LAYOUTS,
   MIN_MODULE_WIDTH,
   MODULE_WIDTH,
+  THERMAL_LAYOUT,
+  THERMAL_RANGE,
   bestColumns,
   buildLabels,
   customLayout,
   labelSheetHtml,
   sheetSummary,
+  symbolWidth,
+  thermalLayout,
 } from '../../lib/labels.js'
 
 /** Sentinel option value — never a real category name. */
@@ -1070,14 +1075,20 @@ function ProductEditor({ product, onClose, onSave, onDelete }) {
 
 /* ---------------------------------------------------------------- labels */
 
+/** The typed roll size, snapped to what a roll printer will accept. */
+const clampRoll = ({ width, height }) => {
+  const { label } = thermalLayout({ width, height })
+  return { width: label.width, height: label.height }
+}
+
 /**
  * The label printer, for one product or for a whole selection.
  *
  * The controls here are the ones that change what comes out of the printer and
- * nothing else: which sheet is in the tray, how many stickers per variant, and
+ * nothing else: which stock is loaded, how many stickers per variant, and
  * whether the cut lines are wanted. Everything about how a label is drawn lives
  * in `labels.js`, so the preview below and the printed page are built from the
- * same description of the sheet.
+ * same description of the label.
  */
 function LabelSheet({ products, onClose }) {
   const { state } = useApp()
@@ -1089,12 +1100,17 @@ function LabelSheet({ products, onClose }) {
   // 0 means "work it out from the count" — the column count only becomes the
   // operator's business when they are matching a sheet they already have.
   const [columns, setColumns] = useState(0)
+  // The roll in the printer, which nothing here can detect — the operator
+  // measures the sticker and types it, and the layout is built from that.
+  const [roll, setRoll] = useState(DEFAULT_THERMAL)
 
   const custom = layoutId === CUSTOM_LAYOUT
-  const layout = useMemo(
-    () => (custom ? customLayout({ perSheet, columns }) : LABEL_LAYOUTS[layoutId]),
-    [custom, layoutId, perSheet, columns],
-  )
+  const thermal = layoutId === THERMAL_LAYOUT
+  const layout = useMemo(() => {
+    if (thermal) return thermalLayout(roll)
+    if (custom) return customLayout({ perSheet, columns })
+    return LABEL_LAYOUTS[layoutId]
+  }, [thermal, roll, custom, layoutId, perSheet, columns])
   const autoColumns = useMemo(() => (custom ? bestColumns(layout.perSheet) : 0), [custom, layout.perSheet])
 
   /** What a label this size has had to give up, in the words the operator uses. */
@@ -1169,8 +1185,40 @@ function LabelSheet({ products, onClose }) {
               </option>
             ))}
             <option value={CUSTOM_LAYOUT}>Custom number per sheet</option>
+            <option value={THERMAL_LAYOUT}>Thermal roll (one at a time)</option>
           </select>
         </Field>
+
+        {thermal && (
+          <>
+            <Field label="Label width (mm)">
+              <input
+                className="input"
+                style={{ width: 120 }}
+                type="number"
+                min={THERMAL_RANGE.minWidth}
+                max={THERMAL_RANGE.maxWidth}
+                step="0.5"
+                value={roll.width}
+                onChange={(event) => setRoll((current) => ({ ...current, width: event.target.value }))}
+                onBlur={() => setRoll(({ width, height }) => clampRoll({ width, height }))}
+              />
+            </Field>
+            <Field label="Label height (mm)">
+              <input
+                className="input"
+                style={{ width: 120 }}
+                type="number"
+                min={THERMAL_RANGE.minHeight}
+                max={THERMAL_RANGE.maxHeight}
+                step="0.5"
+                value={roll.height}
+                onChange={(event) => setRoll((current) => ({ ...current, height: event.target.value }))}
+                onBlur={() => setRoll(({ width, height }) => clampRoll({ width, height }))}
+              />
+            </Field>
+          </>
+        )}
 
         {custom && (
           <>
@@ -1224,15 +1272,19 @@ function LabelSheet({ products, onClose }) {
             onBlur={() => setCopies((current) => Math.min(200, Math.max(1, Math.floor(Number(current) || 1))))}
           />
         </Field>
-        <label className="row" style={{ gap: 7, paddingBottom: 9 }}>
-          <input
-            type="checkbox"
-            className="row-check"
-            checked={guides}
-            onChange={(event) => setGuides(event.target.checked)}
-          />
-          <span className="small">Show cut guides</span>
-        </label>
+        {/* A roll is die-cut, so its edge is the cut — a printed guide would
+            only be a line sitting just inside it. */}
+        {!thermal && (
+          <label className="row" style={{ gap: 7, paddingBottom: 9 }}>
+            <input
+              type="checkbox"
+              className="row-check"
+              checked={guides}
+              onChange={(event) => setGuides(event.target.checked)}
+            />
+            <span className="small">Show cut guides</span>
+          </label>
+        )}
       </div>
 
       <div className="small muted">{layout.hint}</div>
@@ -1240,21 +1292,25 @@ function LabelSheet({ products, onClose }) {
       {dropped.length > 0 && (
         <div className="badge badge-warn" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
           Too short for everything — {dropped.join(' and ')} {dropped.length === 1 ? 'is' : 'are'} left off so the
-          barcode is not clipped. Use fewer per sheet to fit {dropped.length === 1 ? 'it' : 'them'} back on.
+          barcode is not clipped. {thermal ? 'A taller roll' : 'Fewer per sheet'} fits{' '}
+          {dropped.length === 1 ? 'it' : 'them'} back on.
         </div>
       )}
 
       {!layout.barcode.scannable && (
         <div className="badge badge-danger" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
           These labels are too narrow for a readable barcode — at {layout.label.width}mm the symbol prints below
-          the {Math.round((MIN_MODULE_WIDTH / MODULE_WIDTH) * 100)}% minimum a scanner can resolve. Use fewer per
-          sheet, or {layout.columns > 1 ? 'fewer columns' : 'a wider label'}.
+          the {Math.round((MIN_MODULE_WIDTH / MODULE_WIDTH) * 100)}% minimum a scanner can resolve.{' '}
+          {thermal
+            ? `An EAN-13 needs ${Math.ceil(symbolWidth(MIN_MODULE_WIDTH) + 3)}mm of label at the very least — use a wider roll.`
+            : `Use fewer per sheet, or ${layout.columns > 1 ? 'fewer columns' : 'a wider label'}.`}
         </div>
       )}
 
       <div className="badge badge-brand" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
         {labels.length} label{labels.length === 1 ? '' : 's'}
-        {summary.perSheet > 0 && (
+        {thermal && ` · ${layout.label.width} x ${layout.label.height}mm · one per print`}
+        {!thermal && summary.perSheet > 0 && (
           <>
             {' · '}
             {summary.sheets} sheet{summary.sheets === 1 ? '' : 's'}
@@ -1304,7 +1360,9 @@ function LabelSheet({ products, onClose }) {
         ))}
       </div>
       <p className="small muted" style={{ margin: 0 }}>
-        Print at 100% with no "fit to page" — scaling a barcode is what stops it scanning.
+        {thermal
+          ? `Set the printer's paper size to ${layout.label.width} x ${layout.label.height}mm and print at 100% with no "fit to page" — a barcode the driver has scaled is a barcode that will not scan.`
+          : 'Print at 100% with no "fit to page" — scaling a barcode is what stops it scanning.'}
       </p>
     </Modal>
   )

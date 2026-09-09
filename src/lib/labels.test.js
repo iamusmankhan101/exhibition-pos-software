@@ -15,6 +15,7 @@ import {
   LABEL_LAYOUTS,
   MIN_MODULE_WIDTH,
   MODULE_WIDTH,
+  THERMAL_RANGE,
   bestColumns,
   buildLabels,
   customLayout,
@@ -22,6 +23,7 @@ import {
   paginate,
   sheetSummary,
   symbolWidth,
+  thermalLayout,
 } from './labels.js'
 
 const variant = (id, over = {}) => ({
@@ -366,5 +368,124 @@ describe('what a label says about the variant', () => {
     expect(html).toContain('TSS-EME-002')
     expect(html).toContain('data-code="2001234567895"')
     expect(html).toContain('data-code="2009876543210"')
+  })
+})
+
+/*
+ * A roll printer is the one case where the paper is not A4 and there is no grid
+ * to tile, so what is checked here is that neither of those leaks in: the page
+ * must be the label's own size, and one label must never share a page with
+ * another. Both failures are invisible on screen and only show up as a ruined
+ * roll.
+ */
+describe('a thermal roll', () => {
+  const label = (over = {}) => ({ id: 'p', name: 'Silk Scarf', variants: [variant('a', over)] })
+  const render = (roll, count = 1) =>
+    labelSheetHtml(
+      buildLabels([label()], count),
+      {
+        layout: thermalLayout(roll),
+        currencySymbol: '£',
+        guides: true,
+        renderBarcode: (code, options) => `<svg data-module="${options.moduleWidth}"></svg>`,
+      },
+    )
+
+  it('makes the page the label, not a sheet the label sits on', () => {
+    const html = render({ width: 40, height: 30 })
+    expect(html).toContain('@page { size: 40mm 30mm; margin: 0; }')
+    expect(html).not.toContain('size: A4')
+  })
+
+  it('prints one label per page, however many are queued', () => {
+    const html = render({ width: 50, height: 30 }, 5)
+    expect(html.match(/class="sheet"/g)).toHaveLength(5)
+    // Every page is full, so no blank ever pads a roll.
+    expect(html).not.toContain('class="label blank"')
+  })
+
+  it('leaves the page no margin of its own to add', () => {
+    const layout = thermalLayout({ width: 40, height: 30 })
+    expect(layout.page).toMatchObject({ width: 40, height: 30, marginX: 0, marginY: 0 })
+    expect(layout.perSheet).toBe(1)
+    expect(layout.columns * layout.rows).toBe(1)
+  })
+
+  it('draws no cut guide, because the die-cut edge already is one', () => {
+    // Asked for explicitly, and still refused: the roll has no cut to guide.
+    expect(render({ width: 40, height: 30 })).not.toContain('dashed')
+  })
+
+  it('gives the margin back to the bars when the label is small', () => {
+    const small = thermalLayout({ width: 40, height: 30 })
+    // A 40mm label cannot carry the symbol at nominal, so it takes what it can:
+    // less padding than the sheet layouts use, and more magnification for it.
+    expect(small.label.padding).toBeLessThan(4)
+    expect(small.barcode.scannable).toBe(true)
+    expect(symbolWidth(small.barcode.moduleWidth)).toBeLessThanOrEqual(
+      small.label.width - small.label.padding * 2 + 1e-6,
+    )
+  })
+
+  it('spends nothing on magnification once the symbol fits at nominal', () => {
+    const roomy = thermalLayout({ width: 60, height: 40 })
+    expect(roomy.barcode.moduleWidth).toBe(MODULE_WIDTH)
+    expect(roomy.label.padding).toBe(3.8)
+  })
+
+  it('says when a roll is too narrow for an EAN-13 rather than shrinking it', () => {
+    const narrow = thermalLayout({ width: 25, height: 25 })
+    expect(narrow.barcode.scannable).toBe(false)
+    expect(narrow.barcode.moduleWidth).toBeLessThan(MIN_MODULE_WIDTH)
+  })
+
+  it('is scannable at every width with room for the symbol and its padding', () => {
+    for (let width = THERMAL_RANGE.minWidth; width <= THERMAL_RANGE.maxWidth; width += 2.5) {
+      const layout = thermalLayout({ width, height: 30 })
+      const room = width - layout.label.padding * 2
+      expect(layout.barcode.scannable).toBe(room >= symbolWidth(MIN_MODULE_WIDTH) - 1e-9)
+    }
+  })
+
+  it('clamps a size the printer could not take', () => {
+    expect(thermalLayout({ width: 0, height: 0 }).label).toMatchObject({
+      width: THERMAL_RANGE.minWidth,
+      height: THERMAL_RANGE.minHeight,
+    })
+    expect(thermalLayout({ width: 9000, height: 9000 }).label).toMatchObject({
+      width: THERMAL_RANGE.maxWidth,
+      height: THERMAL_RANGE.maxHeight,
+    })
+    expect(thermalLayout({ width: 'nonsense', height: 'nonsense' }).label).toMatchObject({ width: 50.8, height: 50.8 })
+    expect(thermalLayout().label).toMatchObject({ width: 50.8, height: 50.8 })
+  })
+
+  it('defaults to a 2 x 2in label, carried at nominal with nothing dropped', () => {
+    const layout = thermalLayout()
+    // 2in is 50.8mm, not 50 — the stock is imperial and the drift would be
+    // half a millimetre per label against the printer's gap sensor.
+    expect(layout.label).toMatchObject({ width: 50.8, height: 50.8 })
+    expect(layout.barcode.moduleWidth).toBe(MODULE_WIDTH)
+    expect(layout.lines).toEqual({ name: true, color: true, sku: true, price: true })
+  })
+
+  it('drops text rather than the barcode when the roll is short', () => {
+    const short = thermalLayout({ width: 50, height: 20 })
+    expect(short.lines.color).toBe(false)
+    expect(short.barcode.scannable).toBe(true)
+  })
+
+  it('hands the roll scale to the renderer, not the caller\'s guess', () => {
+    const layout = thermalLayout({ width: 40, height: 30 })
+    expect(render({ width: 40, height: 30 })).toContain(`data-module="${layout.barcode.moduleWidth}"`)
+  })
+
+  it('leaves the sheet layouts on A4', () => {
+    const html = labelSheetHtml(buildLabels([label()], 1), {
+      layout: LABEL_LAYOUTS.a4_12,
+      currencySymbol: '£',
+      renderBarcode: () => '<svg></svg>',
+    })
+    expect(html).toContain('@page { size: A4; margin: 0; }')
   })
 })

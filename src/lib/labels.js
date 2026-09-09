@@ -158,7 +158,7 @@ export const LABEL_LAYOUTS = {
     id: 'a4_12',
     name: '12 per sheet (A4)',
     hint: '3 x 4 grid of 63.5 x 72mm labels — standard 12-up A4 label stock.',
-    page: { width: 210, height: 297, marginX: 9.75, marginY: 4.5 },
+    page: { size: 'A4', width: 210, height: 297, marginX: 9.75, marginY: 4.5 },
     columns: 3,
     rows: 4,
     label: { width: 63.5, height: 72, padding: 4 },
@@ -186,7 +186,7 @@ export const CUSTOM_LAYOUT = 'custom'
  * hand, so the margins are the printer's — almost nothing can print to the edge
  * of A4, and a grid that assumed it could would lose its outermost column.
  */
-export const CUSTOM_PAGE = { width: 210, height: 297, marginX: 8, marginY: 8 }
+export const CUSTOM_PAGE = { size: 'A4', width: 210, height: 297, marginX: 8, marginY: 8 }
 
 /** How many labels per sheet the custom layout will accept. */
 export const CUSTOM_RANGE = { min: 1, max: 60 }
@@ -283,6 +283,88 @@ export function customLayout({ perSheet, columns = 0, page = CUSTOM_PAGE }) {
   }
 }
 
+/**
+ * A single label on a thermal roll.
+ *
+ * A roll printer is a different machine from a sheet printer, not a smaller
+ * one. There is no page to tile and no die-cut grid to line up against: the
+ * label *is* the page, the printer advances one at a time, and the driver's
+ * paper size has to be the sticker's own size or the gap sensor tears the run
+ * apart. So `@page` is sized in millimetres to the label and the grid is 1 x 1
+ * — every other layout here divides a sheet, and this one refuses to.
+ *
+ * The stock is die-cut too, so no cut guides are drawn: a printed border on a
+ * label whose edge is already the cut is just a line slightly off the edge.
+ */
+export const THERMAL_LAYOUT = 'thermal'
+
+/**
+ * The roll this shop prints on, in millimetres.
+ *
+ * Label stock is sold in inches and measured here in millimetres, so the number
+ * is written out rather than rounded: a 2 x 2in label is 50.8mm exactly, and
+ * 50mm would be half a millimetre of drift per label against the gap sensor.
+ */
+export const DEFAULT_THERMAL = { width: 50.8, height: 50.8 }
+
+/** What a roll printer will accept — beyond this it is sheet stock, not a roll. */
+export const THERMAL_RANGE = { minWidth: 20, maxWidth: 120, minHeight: 10, maxHeight: 200 }
+
+/**
+ * The margin on a roll label, which is worth less than the bars are.
+ *
+ * On a 63.5mm sheet label the padding costs nothing — the symbol fits at
+ * nominal with room to spare. On a 40mm roll it is the difference between a
+ * symbol at nominal and one at 91% of it, so the padding is given back to the
+ * barcode down to a floor, and only as far as nominal needs. Below the floor
+ * the print head's own edge tolerance starts eating the quiet zone, which
+ * costs more than the magnification gains.
+ */
+const THERMAL_MIN_PADDING = 1.5
+
+function thermalPadding(width) {
+  const preferred = paddingFor(width)
+  const spare = (width - symbolWidth(MODULE_WIDTH)) / 2
+  if (spare >= preferred) return preferred
+  return Math.max(THERMAL_MIN_PADDING, floorTo(spare, 1))
+}
+
+const clamp = (value, min, max, fallback) => {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return round(Math.min(max, Math.max(min, number)), 2)
+}
+
+/**
+ * A layout that prints one label per page at the roll's exact size.
+ *
+ * The size is the operator's to state because it is a physical fact about the
+ * roll loaded in the printer, not something this app can derive or should
+ * guess. What it can do is say when the number they typed cannot carry an
+ * EAN-13 — see `barcode.scannable`, which the UI turns into a warning rather
+ * than printing bars no scanner will read.
+ */
+export function thermalLayout({ width = DEFAULT_THERMAL.width, height = DEFAULT_THERMAL.height } = {}) {
+  const w = clamp(width, THERMAL_RANGE.minWidth, THERMAL_RANGE.maxWidth, DEFAULT_THERMAL.width)
+  const h = clamp(height, THERMAL_RANGE.minHeight, THERMAL_RANGE.maxHeight, DEFAULT_THERMAL.height)
+  const label = { width: w, height: h, padding: thermalPadding(w) }
+  return {
+    id: THERMAL_LAYOUT,
+    name: 'Thermal roll (one at a time)',
+    hint: `${w} x ${h}mm labels, one per print — set the printer's paper size to match, and turn scaling off.`,
+    // The label is the page: no margins, because a roll has none to give.
+    page: { size: `${w}mm ${h}mm`, width: w, height: h, marginX: 0, marginY: 0 },
+    columns: 1,
+    rows: 1,
+    label,
+    perSheet: 1,
+    cells: 1,
+    // The die-cut edge is the cut line; a printed one would only sit beside it.
+    cuts: false,
+    ...metricsFor(label),
+  }
+}
+
 const escapeHtml = (value) =>
   String(value ?? '').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char])
 
@@ -367,7 +449,7 @@ function sheetCss(layout, guides) {
   const { page, label, columns, rows } = layout
   const guideRule = guides ? 'border: 1px dashed #c8ccd4; border-radius: 2mm;' : 'border: 1px solid transparent;'
   return `
-    @page { size: A4; margin: 0; }
+    @page { size: ${page.size || 'A4'}; margin: 0; }
     html, body { margin: 0; padding: 0; }
     body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
     .sheet {
@@ -421,7 +503,8 @@ export function labelSheetHtml(labels, { layout, currencySymbol = '', guides = t
         .join('')
     : labels.map((entry) => labelHtml(entry, cell)).join('')
 
-  const layoutCss = layout.perSheet ? sheetCss(layout, guides) : compactCss(layout, guides)
+  const cuts = guides && layout.cuts !== false
+  const layoutCss = layout.perSheet ? sheetCss(layout, cuts) : compactCss(layout, cuts)
   const type = layout.type || { name: 9, color: 8, sku: 7.5, price: 11 }
 
   /*
