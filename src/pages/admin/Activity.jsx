@@ -5,9 +5,10 @@ import { formatDate } from '../../lib/format.js'
 import { exportCsv } from '../../lib/csv.js'
 
 export default function Activity() {
-  const { state, pendingSync, online } = useApp()
+  const { state, pendingSync, online, actions, can } = useApp()
   const [tab, setTab] = useState('audit')
   const [query, setQuery] = useState('')
+  const [push, setPush] = useState(null)
 
   const logs = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -114,6 +115,47 @@ export default function Activity() {
               replayed sale can never be recorded twice.
             </div>
           </div>
+
+          {can('admin.settings') && (
+            <div className="card" style={{ padding: 14 }}>
+              <div style={{ fontWeight: 620, fontSize: 13.5 }}>Push everything to the cloud</div>
+              <div className="small muted" style={{ marginTop: 4 }}>
+                The queue above only carries changes made since this device was connected to the backend. Anything
+                recorded before that is still on this till and has never been sent, which is why a phone signing in
+                elsewhere can come up empty. This sends the whole dataset up. It only adds and overwrites, so it is
+                safe to run more than once and cannot delete a sale another till has already sent.
+              </div>
+              <div className="row wrap" style={{ gap: 10, marginTop: 12, alignItems: 'center' }}>
+                <button
+                  className="btn btn-primary"
+                  disabled={!online || push?.running}
+                  onClick={async () => {
+                    setPush({ running: true, label: 'Starting…' })
+                    try {
+                      const summary = await actions.pushAll(({ table, done, total }) =>
+                        setPush({ running: true, label: `${table} · ${done} of ${total}` }),
+                      )
+                      setPush({ running: false, label: `Sent ${summary.total} record(s).` })
+                    } catch (error) {
+                      setPush({ running: false, label: `Failed: ${error.message}`, failed: true })
+                    }
+                  }}
+                >
+                  {push?.running ? 'Pushing…' : 'Push all data'}
+                </button>
+                {push && (
+                  <span
+                    className={push.failed ? 'small' : 'small muted'}
+                    style={push.failed ? { color: 'var(--danger)' } : undefined}
+                    role={push.failed ? 'alert' : undefined}
+                  >
+                    {push.label}
+                  </span>
+                )}
+                {!online && <span className="small muted">Offline — connect to push.</span>}
+              </div>
+            </div>
+          )}
 
           {outbox.length === 0 ? (
             <EmptyState title="Queue is empty">Nothing waiting to sync.</EmptyState>

@@ -407,3 +407,123 @@ describe('product images reach the database and come back', () => {
     expect(rowsFor('products')[0]).toHaveProperty('image_url', null)
   })
 })
+
+/* -------------------------------------------------------------- backfill */
+
+/**
+ * The backfill is the recovery path for data that predates the backend, so
+ * these tests are about the two ways it could quietly make things worse:
+ * writing rows in an order the foreign keys reject, and overwriting a live
+ * staff login with a local record that never had one.
+ */
+describe('pushEverything', () => {
+  const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ'
+
+  const fullState = () => {
+    const state = baseState()
+    state.roles = [{ id: 'admin', name: 'Admin', permissions: ['*'], maxDiscountPercent: 100 }]
+    state.users = [
+      { id: 'u1', authId: 'auth-uuid-1', name: 'Ali', email: 'ali@tareez.com', role: 'admin', active: true },
+      { id: 'u2', name: 'Sara', email: 'sara@tareez.com', role: 'admin', active: true },
+    ]
+    state.movements = [
+      { id: 'm1', variantId: 'v1', locationId: 'ex1', type: 'in', quantity: 10, balanceAfter: 10, createdAt: '2026-03-01T10:00:00.000Z' },
+    ]
+    state.devices = [
+      { id: 'dev1', code: 'AB12', label: 'Till', firstSeenAt: '2026-03-01T09:00:00.000Z', lastSeenAt: '2026-03-01T10:00:00.000Z' },
+    ]
+    state.orders = [
+      {
+        id: 'o1',
+        clientId: 'cli-1',
+        invoiceNo: 'TRZ-0001',
+        exhibitionId: 'ex1',
+        customerId: 'cus1',
+        items: [{ variantId: 'v1', quantity: 1 }],
+        total: 80,
+        createdAt: '2026-03-01T10:05:00.000Z',
+      },
+    ]
+    state.payments = [
+      { id: 'pay1', orderId: 'o1', method: 'Cash', amount: 80, createdAt: '2026-03-01T10:05:00.000Z' },
+    ]
+    return state
+  }
+
+  it('writes every table in an order the foreign keys accept', async () => {
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    await pushEverything(fullState())
+
+    const order = writes.map((write) => write.table)
+    const at = (table) => order.indexOf(table)
+
+    // staff.role -> roles.id
+    expect(at('roles')).toBeLessThan(at('staff'))
+    // variants.product_id -> products.id
+    expect(at('products')).toBeLessThan(at('variants'))
+    // inventory.variant_id and stock_movements.variant_id -> variants.id
+    expect(at('variants')).toBeLessThan(at('inventory'))
+    expect(at('variants')).toBeLessThan(at('stock_movements'))
+    // orders.customer_id -> customers.id
+    expect(at('customers')).toBeLessThan(at('orders'))
+  })
+
+  it('never nulls a live auth_id from a record that has no login on it', async () => {
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    await pushEverything(fullState())
+
+    const staff = rowsFor('staff')
+    // Ali was pulled with his login, so the link is written back.
+    expect(staff.find((row) => row.id === 'u1').auth_id).toBe('auth-uuid-1')
+    // Sara's record reached this device through a pull, which drops auth_id.
+    // Writing it as null would lock her out of every RLS policy in the project.
+    expect(staff.find((row) => row.id === 'u2')).not.toHaveProperty('auth_id')
+  })
+
+  it('upserts inventory on its composite key, not on a primary key it has not got', async () => {
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    await pushEverything(fullState())
+
+    const write = writes.find((entry) => entry.table === 'inventory')
+    expect(write.options).toEqual({ onConflict: 'location_id,variant_id' })
+  })
+
+  it('sends products in small batches, because each row can carry an image', async () => {
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    const state = fullState()
+    state.products = Array.from({ length: 45 }, (_, i) => ({
+      id: `p${i}`,
+      name: `Product ${i}`,
+      image: PHOTO,
+      variants: [],
+    }))
+
+    await pushEverything(state)
+
+    const batches = writes.filter((write) => write.table === 'products')
+    expect(batches.length).toBe(3)
+    expect(Math.max(...batches.map((batch) => batch.rows.length))).toBeLessThanOrEqual(20)
+    expect(rowsFor('products')).toHaveLength(45)
+  })
+
+  it('reports what it sent, so the till can say more than "done"', async () => {
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    const summary = await pushEverything(fullState())
+
+    expect(summary.tables.products).toBe(1)
+    expect(summary.tables.staff).toBe(2)
+    expect(summary.tables.inventory).toBe(1)
+    expect(summary.total).toBe(
+      Object.values(summary.tables).reduce((sum, count) => sum + count, 0),
+    )
+  })
+
+  it('skips a table with nothing in it rather than sending an empty write', async () => {
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    const state = fullState()
+    state.orders = []
+
+    await pushEverything(state)
+    expect(writes.some((write) => write.table === 'orders')).toBe(false)
+  })
+})

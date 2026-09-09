@@ -191,10 +191,20 @@ const promoRow = (promo) => ({
   created_at: promo.createdAt,
 })
 
-/** Only the hash of a PIN ever leaves the device that set it. */
+/**
+ * Only the hash of a PIN ever leaves the device that set it.
+ *
+ * `auth_id` is the link between a staff record and the login that owns it, and
+ * it is what every RLS policy checks through `is_active_staff()`. A device that
+ * has only ever seen this person through a pull holds no `authId` for them —
+ * the pull maps the row for display and drops it — so writing the column from
+ * such a record would replace a live link with null and lock that person out of
+ * the project entirely. The column is therefore omitted rather than nulled
+ * whenever the local record cannot supply one.
+ */
 const staffRow = (account) => ({
   id: account.id,
-  auth_id: account.authId || null,
+  ...(account.authId ? { auth_id: account.authId } : {}),
   name: account.name,
   email: account.email,
   role: account.role,
@@ -701,4 +711,110 @@ export async function pullEverything() {
       createdAt: row.created_at,
     })),
   }
+}
+
+/* ------------------------------------------------------------- backfill */
+
+const deviceRow = (device) => ({
+  id: device.id,
+  code: device.code,
+  label: device.label || '',
+  first_seen_at: device.firstSeenAt,
+  last_seen_at: device.lastSeenAt,
+  last_user_id: device.lastUserId || null,
+  last_user_name: device.lastUserName || '',
+  revoked_at: device.revokedAt || null,
+  user_agent: device.userAgent || '',
+})
+
+/**
+ * How many rows go up in one request.
+ *
+ * Products are their own case because the image lives in the row as a base64
+ * data URL — a hundred of those in one request is tens of megabytes, which the
+ * API rejects outright and a stall's uplink would not carry anyway. The rest
+ * are small enough that the round trip, not the payload, is the cost.
+ */
+const PUSH_CHUNK = 400
+const PRODUCT_CHUNK = 20
+
+const chunked = (rows, size) => {
+  const out = []
+  for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size))
+  return out
+}
+
+/**
+ * Mirrors the whole of local state up to Supabase.
+ *
+ * This exists because sync only ever carried *new* mutations. A device that
+ * built its catalogue before the backend was configured queued those changes
+ * against the local adapter, which reports success without sending anything —
+ * so they were marked synced and were never eligible to be pushed again. The
+ * data is perfectly safe in IndexedDB and completely absent from the server,
+ * and no amount of ordinary use will ever close that gap: nothing re-sends a
+ * record that the queue believes it already sent.
+ *
+ * Every write is the same upsert the incremental path uses, so running this
+ * twice writes the same rows twice and lands in the same place. It is additive
+ * by design — nothing is deleted, so a row that exists only on the server (a
+ * sale another till took) survives a backfill from this one.
+ *
+ * Ordered to respect the foreign keys: roles before the staff that reference
+ * them, products before variants, variants before the inventory and movements
+ * that hang off them, customers before the orders that name them.
+ */
+export async function pushEverything(state, onProgress = () => {}) {
+  if (!isConfigured) throw new Error('Supabase is not configured.')
+  if (!state) throw new Error('There is no local data to push.')
+  sb = sb || (await getSupabase())
+  if (!sb) throw new Error('Could not reach Supabase.')
+
+  const products = state.products || []
+
+  const plan = [
+    ['roles', (state.roles || []).map(roleRow)],
+    ['staff', (state.users || []).map(staffRow)],
+    [
+      'settings',
+      state.settings
+        ? [{ id: 'settings', data: state.settings, updated_at: new Date().toISOString() }]
+        : [],
+    ],
+    ['exhibitions', (state.exhibitions || []).map(exhibitionRow)],
+    ['products', products.map((product) => productRow(product)), PRODUCT_CHUNK],
+    [
+      'variants',
+      products.flatMap((product) =>
+        (product.variants || []).map((variant) => variantRow(variant, product.id)),
+      ),
+    ],
+    ['customers', (state.customers || []).map(customerRow)],
+    ['promo_codes', (state.promoCodes || []).map(promoRow)],
+    ['orders', (state.orders || []).map(orderRow)],
+    ['payments', (state.payments || []).map(paymentRow)],
+    ['returns', (state.returns || []).map(returnRow)],
+    ['inventory', Object.values(state.inventory || {}).map(inventoryRow), PUSH_CHUNK, 'location_id,variant_id'],
+    ['stock_movements', (state.movements || []).map(movementRow)],
+    ['devices', (state.devices || []).map(deviceRow)],
+    ['audit_logs', (state.auditLogs || []).map(auditRow)],
+  ]
+
+  const total = plan.reduce((sum, [, rows]) => sum + rows.length, 0)
+  const pushed = {}
+  let done = 0
+
+  for (const [table, rows, size = PUSH_CHUNK, onConflict] of plan) {
+    pushed[table] = rows.length
+    for (const batch of chunked(rows, size)) {
+      await upsert(table, batch, onConflict)
+      done += batch.length
+      onProgress({ table, done, total })
+    }
+    // A table with nothing in it still moves the report along, so the caller
+    // can show progress that reaches the end rather than stalling on empties.
+    onProgress({ table, done, total })
+  }
+
+  return { total, tables: pushed }
 }

@@ -25,7 +25,7 @@ import {
 import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
-import { createSupabaseAdapter, pullEverything } from './supabaseAdapter.js'
+import { createSupabaseAdapter, pullEverything, pushEverything } from './supabaseAdapter.js'
 import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
 import {
   createCredential,
@@ -1789,6 +1789,41 @@ export function AppProvider({ children }) {
           return withOutbox(draft, 'promo.delete', uid('del'), { promoId })
         })
         toast('Promo code deleted', 'warn')
+      },
+
+      /* cloud */
+
+      /**
+       * Sends everything this device holds up to Supabase.
+       *
+       * The incremental queue only ever carried new mutations, and anything
+       * recorded before the backend was configured was marked synced against
+       * the local adapter without leaving the device. Those records are not
+       * pending, so nothing retries them — this is the only way they reach the
+       * server, and therefore the only way a second device ever sees them.
+       *
+       * Run from the till that holds the data, which is the one the catalogue
+       * was built on. It is additive and idempotent, so running it twice is
+       * harmless and running it from a device with less data cannot delete what
+       * another one already sent.
+       */
+      async pushAll(onProgress) {
+        guard()
+        if (!supabaseConfigured) {
+          throw new Error('This build has no Supabase credentials, so there is nowhere to push to.')
+        }
+        if (!navigator.onLine) throw new Error('You need to be online to push to the cloud.')
+        const summary = await pushEverything(stateRef.current, onProgress)
+        setState((current) =>
+          withAudit(
+            current,
+            'Pushed all data to cloud',
+            `${summary.total} record(s) from device ${deviceCodeFrom(deviceId)}`,
+            'sync',
+            '',
+          ),
+        )
+        return summary
       },
 
       /* devices */
