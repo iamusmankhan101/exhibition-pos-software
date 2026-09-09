@@ -11,6 +11,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const writes = []
 const deletes = []
 
+/** Rows the stub hands back to a read, keyed by table. Empty unless a test fills it. */
+const tables = {}
+
 const stubClient = {
   from(table) {
     return {
@@ -31,8 +34,12 @@ const stubClient = {
         }
       },
       select() {
+        const rows = tables[table] || []
+        // Awaitable for `select('*')` and chainable for `select().eq()`, so the
+        // one stub serves both the pull and the orphan-variant lookup.
         return {
-          eq: () => Promise.resolve({ data: [], error: null }),
+          eq: () => Promise.resolve({ data: rows, error: null }),
+          then: (resolve) => resolve({ data: rows, error: null }),
         }
       },
     }
@@ -89,6 +96,7 @@ const rowsFor = (table) => writes.filter((write) => write.table === table).flatM
 beforeEach(() => {
   writes.length = 0
   deletes.length = 0
+  for (const key of Object.keys(tables)) delete tables[key]
 })
 
 /* --------------------------------------------------------------- tests */
@@ -325,5 +333,77 @@ describe('supabase adapter', () => {
     const adapter = createSupabaseAdapter({ getState: () => null })
     const result = await adapter.push({ id: 'o6', type: 'order.create', clientId: 'y', payload: {}, createdAt: '' })
     expect(result.ok).toBe(false)
+  })
+})
+
+/*
+ * Product images are the one field that is large, is not recoverable from
+ * anywhere else, and is stored inline in the row rather than behind a URL. A
+ * mapping slip that dropped the column, or wrote null over a good server-side
+ * copy, would lose the photograph permanently and silently — nothing else in
+ * the app would look wrong. So the round trip is pinned in both directions.
+ */
+describe('product images reach the database and come back', () => {
+  const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ'
+
+  const pushSave = (state, payload) =>
+    createSupabaseAdapter({ getState: () => state }).push({
+      id: 'obx1',
+      type: 'product.save',
+      clientId: 'p1',
+      payload,
+      deviceId: 'dev1',
+      createdAt: '2026-03-01T10:00:00.000Z',
+    })
+
+  it('writes the image into the row it saves', async () => {
+    const state = baseState()
+    state.products[0].image = PHOTO
+    const result = await pushSave(state, { id: 'p1' })
+
+    expect(result.ok).toBe(true)
+    expect(rowsFor('products')[0].image_url).toBe(PHOTO)
+  })
+
+  it('reads it from live state, not from the outbox payload', async () => {
+    const state = baseState()
+    state.products[0].image = PHOTO
+    // The queued payload carries no image — the store strips it so the outbox
+    // does not hold a second copy of every photograph.
+    await pushSave(state, { id: 'p1', image: null })
+
+    expect(rowsFor('products')[0].image_url).toBe(PHOTO)
+  })
+
+  it('leaves the column alone when the product is gone from local state', async () => {
+    // Deleted locally before the queue drained: the payload standing in for it
+    // has no image, so writing the column would blank a good server-side one.
+    await pushSave(baseState(), { id: 'gone', name: 'Ghost', variants: [] })
+
+    const [row] = rowsFor('products')
+    expect(row.id).toBe('gone')
+    expect(row).not.toHaveProperty('image_url')
+  })
+
+  it('comes back on a fresh device that pulls the catalogue down', async () => {
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    tables.products = [
+      { id: 'p1', name: 'Scarf', category: 'Scarves', collection: '', description: '', status: 'Active', image_url: PHOTO },
+    ]
+    tables.variants = [
+      { id: 'v1', product_id: 'p1', sku: 'SKU1', barcode: '2001234567895', size: 'M', color: 'Black', price: 100, exhibition_price: null, cost: 20, min_stock: 1 },
+    ]
+
+    const pulled = await pullEverything()
+    expect(pulled.products[0].image).toBe(PHOTO)
+  })
+
+  it('clears the column when the image really was removed', async () => {
+    const state = baseState()
+    state.products[0].image = null
+    await pushSave(state, { id: 'p1' })
+
+    // Present and null, not absent — "Remove image" has to reach the server.
+    expect(rowsFor('products')[0]).toHaveProperty('image_url', null)
   })
 })

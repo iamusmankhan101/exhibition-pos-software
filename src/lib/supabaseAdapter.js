@@ -111,16 +111,28 @@ const inventoryRow = (cell) => ({
   updated_at: cell.updatedAt,
 })
 
-const productRow = (product) => ({
+/**
+ * A product as a row.
+ *
+ * `image` carries the data URL the picker produced, and it is written here as
+ * the column's own value rather than a link to a bucket — the till has to draw
+ * a thumbnail with no network, so the picture lives in the record. Phase 2
+ * uploads to Storage and stores the public URL here instead.
+ *
+ * `withImage` is false only when the product could not be read back from local
+ * state and the outbox payload stood in for it. Those payloads carry no image
+ * (see `slimPayload` in the store), so writing the column from one would
+ * replace a good server-side image with null — which is the difference between
+ * an image saved permanently and one that survives until the next sync.
+ */
+const productRow = (product, { withImage = true } = {}) => ({
   id: product.id,
   name: product.name,
   category: product.category || '',
   collection: product.collection || '',
   description: product.description || '',
   status: product.status || 'Active',
-  // Phase 1 keeps the data URL the picker produced. Phase 2 uploads to Storage
-  // and stores the public URL here instead.
-  image_url: product.image || null,
+  ...(withImage ? { image_url: product.image || null } : {}),
 })
 
 const variantRow = (variant, productId) => ({
@@ -313,8 +325,9 @@ const handlers = {
   },
 
   async 'product.save'(entry, state) {
-    const product = state.products.find((row) => row.id === entry.payload.id) || entry.payload
-    await upsert('products', productRow(product))
+    const live = state.products.find((row) => row.id === entry.payload.id)
+    const product = live || entry.payload
+    await upsert('products', productRow(product, { withImage: Boolean(live) }))
     await upsert('variants', product.variants.map((variant) => variantRow(variant, product.id)))
     // A variant removed in the editor has to go from the server too.
     const { data } = await sb.from('variants').select('id').eq('product_id', product.id)

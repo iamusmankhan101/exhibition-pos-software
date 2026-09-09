@@ -25,7 +25,7 @@ import {
 import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
-import { createSupabaseAdapter } from './supabaseAdapter.js'
+import { createSupabaseAdapter, pullEverything } from './supabaseAdapter.js'
 import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
 import {
   createCredential,
@@ -138,6 +138,70 @@ function seedLogo(settings) {
   return { business: { ...business, logo: DEFAULT_SETTINGS.business.logo }, logoSeeded: true }
 }
 
+/**
+ * The outbox copy of a payload, with the bulky parts left behind.
+ *
+ * An outbox entry is a note that something changed, not a copy of the change:
+ * every handler re-reads the live record before pushing it, so the payload only
+ * has to name what to look up. That distinction is the whole game for images. A
+ * product image is a base64 data URL held inline in the record, so a payload
+ * that copied it would put a second copy in the outbox — persisted to
+ * IndexedDB, broadcast to every tab on every change, and kept for the life of
+ * the queue. A few hundred photographed products would fill the storage quota
+ * with duplicates, and a full quota is exactly how the images stop being saved
+ * at all: `idbSet` starts refusing, and the picture that is on screen never
+ * reaches disk.
+ */
+export const slimPayload = (type, payload) =>
+  type === 'product.save' && payload?.image ? { ...payload, image: null } : payload
+
+/**
+ * How many pushed entries the sync queue keeps for the Activity view.
+ *
+ * A synced entry is history, not work — but it is still state, so it is written
+ * to IndexedDB and broadcast whole every time anything changes. Left to grow it
+ * eventually makes the state too big to persist, which loses far more than the
+ * history it was keeping. Pending entries are never dropped: those are unsent
+ * work, and dropping one loses a sale.
+ */
+export const SYNCED_KEPT = 200
+
+export function pruneOutbox(outbox) {
+  const synced = outbox.filter((entry) => entry.status === 'synced')
+  if (synced.length <= SYNCED_KEPT) return outbox
+  const drop = new Set(synced.slice(0, synced.length - SYNCED_KEPT).map((entry) => entry.id))
+  return outbox.filter((entry) => !drop.has(entry.id))
+}
+
+/**
+ * True when this device holds nothing of its own to lose.
+ *
+ * The catalogue pull is a replace, not a merge, so it may only ever run on a
+ * device that has never held the dataset. Products are the obvious tell, but
+ * the ones that matter are the other two: a local order or a pending outbox
+ * entry is work this till took that the server has not seen, and overwriting
+ * it is how a day's takings goes missing.
+ */
+export const isEmptyDevice = (state) =>
+  !state.products.length &&
+  !state.orders.length &&
+  !(state.outbox || []).some((entry) => entry.status === 'pending')
+
+/**
+ * The catalogue from a pull, with the parts this device already owns removed.
+ *
+ * Two of the pulled collections are traps. `users` comes back without
+ * `pin_hash`, because the pull maps the staff row for display rather than for
+ * authentication — writing it over the list `refreshIdentity` just fetched
+ * would silently break PIN sign-in on this device. And `settings` is undefined
+ * when the row has never been written, which would blank the local defaults.
+ * Both are dropped here rather than guarded at the call site.
+ */
+export function catalogueFrom(pulled) {
+  const { users, roles, settings, ...rest } = pulled
+  return settings ? { ...rest, settings } : rest
+}
+
 /** Fills in fields added after a state blob was first written. */
 function migrate(state) {
   const { business, logoSeeded } = seedLogo(state.settings)
@@ -153,7 +217,13 @@ function migrate(state) {
     },
     roles: state.roles?.length ? state.roles : DEFAULT_ROLES.map((role) => ({ ...role })),
     notifications: state.notifications || [],
-    outbox: state.outbox || [],
+    // A device that ran an earlier build still holds outbox entries with a full
+    // copy of every product image in them. They were never needed — the handler
+    // reads the live record — so they are dropped on load rather than carried
+    // for the life of the queue.
+    outbox: pruneOutbox(
+      (state.outbox || []).map((entry) => ({ ...entry, payload: slimPayload(entry.type, entry.payload) })),
+    ),
     auditLogs: state.auditLogs || [],
     promoCodes: state.promoCodes || [],
     returns: state.returns || [],
@@ -211,13 +281,28 @@ export function AppProvider({ children }) {
 
   /* -------------------------------------------------- persist + broadcast */
 
-  const persist = useCallback((next) => {
-    clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => {
-      idbSet(STATE_KEY, next).catch(() => {})
-      channelRef.current?.postMessage({ origin: deviceId, state: next })
-    }, 200)
-  }, [deviceId])
+  const pushToast = useCallback((message, tone = 'info') => {
+    const id = uid('toast')
+    setToasts((current) => [...current, { id, message, tone }])
+    setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 4200)
+  }, [])
+
+  const persist = useCallback(
+    (next) => {
+      clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(() => {
+        // A failed write used to be swallowed, which is the worst way for this
+        // to fail: the app carries on from memory and looks fine, and the work
+        // — a product image included — is gone at the next reload with nothing
+        // ever having said so. Quota is the realistic cause, so say that.
+        idbSet(STATE_KEY, next).catch(() => {
+          pushToast('This device could not save to storage — free up space, changes may be lost on reload.', 'danger')
+        })
+        channelRef.current?.postMessage({ origin: deviceId, state: next })
+      }, 200)
+    },
+    [deviceId, pushToast],
+  )
 
   useEffect(() => {
     if (typeof BroadcastChannel === 'undefined') return undefined
@@ -277,11 +362,7 @@ export function AppProvider({ children }) {
 
   /* ------------------------------------------------------------- helpers */
 
-  const toast = useCallback((message, tone = 'info') => {
-    const id = uid('toast')
-    setToasts((current) => [...current, { id, message, tone }])
-    setTimeout(() => setToasts((current) => current.filter((item) => item.id !== id)), 4200)
-  }, [])
+  const toast = pushToast
 
   const user = useMemo(
     () => state?.users.find((entry) => entry.id === session.userId) || null,
@@ -415,7 +496,7 @@ export function AppProvider({ children }) {
           id: uid('obx'),
           type,
           clientId,
-          payload,
+          payload: slimPayload(type, payload),
           deviceId,
           status: 'pending',
           createdAt: nowIso(),
@@ -462,12 +543,14 @@ export function AppProvider({ children }) {
           const syncedIds = new Map(synced.map((entry) => [entry.id, entry.syncedAt]))
           setState((current) => ({
             ...current,
-            outbox: current.outbox.map((entry) =>
-              syncedIds.has(entry.id)
-                ? { ...entry, status: 'synced', syncedAt: syncedIds.get(entry.id) }
-                : failed.includes(entry.id)
-                  ? { ...entry, status: 'pending', attempts: (entry.attempts || 0) + 1 }
-                  : entry,
+            outbox: pruneOutbox(
+              current.outbox.map((entry) =>
+                syncedIds.has(entry.id)
+                  ? { ...entry, status: 'synced', syncedAt: syncedIds.get(entry.id) }
+                  : failed.includes(entry.id)
+                    ? { ...entry, status: 'pending', attempts: (entry.attempts || 0) + 1 }
+                    : entry,
+              ),
             ),
           }))
         },
@@ -635,6 +718,9 @@ export function AppProvider({ children }) {
           throw new Error(message)
         }
         clearAttempts('pin', userId)
+        // Normally a no-op — this device has the catalogue by now. It matters
+        // when the pull at first sign-in failed or ran offline.
+        await api.adoptCatalogue().catch(() => {})
         return api.startSession(account, 'PIN')
       },
 
@@ -696,6 +782,12 @@ export function AppProvider({ children }) {
             throw new Error('This account is awaiting approval or has been deactivated.')
           }
           clearAttempts('password', attemptKey)
+          // A failed pull must not cost them the sign-in: they are authenticated
+          // either way, and an empty till they can see is better than a login
+          // screen that rejects a correct password. It retries on the next one.
+          await api.adoptCatalogue().catch((error) => {
+            toast(`Signed in, but the catalogue did not load: ${error.message}`, 'danger')
+          })
           return api.startSession(account, 'Password')
         }
 
@@ -715,6 +807,34 @@ export function AppProvider({ children }) {
         if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
         clearAttempts('password', attemptKey)
         return api.startSession(account, 'Password')
+      },
+
+      /**
+       * Fills a brand-new device with the catalogue, once.
+       *
+       * `refreshIdentity` brings down staff and roles — enough to get through
+       * the login screen and nothing more. Without this, a phone signing in for
+       * the first time lands on a till with no products, no exhibitions and no
+       * stock, because a device that has never synced starts from an empty seed
+       * and nothing else ever fetches the data.
+       *
+       * Deliberately narrow. It runs only on a device with nothing of its own
+       * (see `isEmptyDevice`), it never touches identity or the outbox, and it
+       * re-checks the condition inside `setState` because the pull is a network
+       * round trip and a sale can be rung up while it is in flight.
+       */
+      async adoptCatalogue() {
+        if (!supabaseConfigured || !navigator.onLine) return false
+        if (!isEmptyDevice(stateRef.current)) return false
+
+        const catalogue = catalogueFrom(await pullEverything())
+        let adopted = false
+        setState((current) => {
+          if (!isEmptyDevice(current)) return current
+          adopted = true
+          return migrate({ ...current, ...catalogue })
+        })
+        return adopted
       },
 
       /**
