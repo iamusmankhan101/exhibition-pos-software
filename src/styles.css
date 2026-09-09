@@ -497,8 +497,20 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
 .chip:hover { background: var(--surface-2); }
 .chip.active { background: var(--brand); border-color: var(--brand); color: #fff; }
 
+/*
+ * The scroll lives here, not on the grid.
+ *
+ * A grid that is also the scrolling flex item sizes its `auto` rows against a
+ * height it was handed rather than the height its cards need, and the rows come
+ * out far too short — a card is then stretched to a row half its content, the
+ * thumbnail (the only shrinkable item in the card) is squeezed to nothing, and
+ * `overflow: hidden` cuts the name off mid-word. Splitting the two apart lets
+ * the grid size itself normally inside a plain scrolling block, which is what
+ * it was always meant to do.
+ */
+.product-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .product-grid {
-  flex: 1; overflow-y: auto; padding: 16px 18px calc(20px + var(--safe-b));
+  padding: 16px 18px calc(20px + var(--safe-b));
   display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; align-content: start;
 }
 .product-card {
@@ -511,6 +523,12 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
 .product-card:active { transform: scale(0.985); }
 .product-card.disabled { opacity: 0.5; cursor: not-allowed; }
 .product-thumb {
+  /* `flex: none` because the card must never pay for a short row with the
+     picture. It is the only shrinkable item in the card, so without this it
+     absorbs any height shortfall silently and collapses to nothing — which is
+     exactly how the grid bug above showed up. Now a shortfall overflows where
+     it can be seen instead. */
+  flex: none;
   aspect-ratio: 1 / 1; display: grid; place-items: center; font-size: 23px; font-weight: 700;
   position: relative; overflow: hidden; letter-spacing: -0.02em;
 }

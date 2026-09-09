@@ -76,8 +76,24 @@ export default function POS() {
 
   /* ------------------------------------------------------------ catalogue */
 
+  /*
+   * `All` plus the categories the catalogue actually names.
+   *
+   * A product with no category — an import that left the column empty, or one
+   * saved before the field existed — was reaching this list as an empty string
+   * and drawing a chip with no label on it: a button the operator can press
+   * that says nothing and filters to almost nothing. Those products are still
+   * reachable under `All`, which is where an uncategorised item belongs.
+   */
   const categories = useMemo(
-    () => ['All', ...new Set(state.products.map((product) => product.category))],
+    () => [
+      'All',
+      ...new Set(
+        state.products
+          .map((product) => String(product.category || '').trim())
+          .filter(Boolean),
+      ),
+    ],
     [state.products],
   )
 
@@ -385,64 +401,66 @@ export default function POS() {
           </div>
         </div>
 
-        <div className="product-grid">
-          {products.map((product) => {
-            const out = product.totalStock <= 0 && !state.settings.allowOverselling
-            // An out-of-stock line stays tappable for anyone who could authorise
-            // selling it anyway — the modal is where that decision gets made.
-            const blocked = out && !can('stock.oversell') && !oversellApproval
-            return (
-              <button
-                key={product.id}
-                className={`product-card ${blocked ? 'disabled' : ''}`}
-                onClick={() => !blocked && handleProductTap(product)}
-                disabled={blocked}
-              >
-                <Thumb src={product.image} name={product.name} className="product-thumb">
-                  <span className="stock-pill">{out ? 'Out' : product.totalStock}</span>
-                </Thumb>
-                <div className="product-body">
-                  <div className="product-name">{product.name}</div>
-                  <div className="product-meta">
-                    {product.category} · {product.variants.length} option
-                    {product.variants.length > 1 ? 's' : ''}
-                  </div>
-                  <div className="product-price">
-                    {currency(product.minPrice)}
-                    {product.variants.length > 1 &&
-                      Math.max(...product.variants.map((v) => v.sellPrice)) !== product.minPrice && (
-                        <span className="small muted"> +</span>
+        <div className="product-scroll">
+          <div className="product-grid">
+            {products.map((product) => {
+              const out = product.totalStock <= 0 && !state.settings.allowOverselling
+              // An out-of-stock line stays tappable for anyone who could authorise
+              // selling it anyway — the modal is where that decision gets made.
+              const blocked = out && !can('stock.oversell') && !oversellApproval
+              return (
+                <button
+                  key={product.id}
+                  className={`product-card ${blocked ? 'disabled' : ''}`}
+                  onClick={() => !blocked && handleProductTap(product)}
+                  disabled={blocked}
+                >
+                  <Thumb src={product.image} name={product.name} className="product-thumb">
+                    <span className="stock-pill">{out ? 'Out' : product.totalStock}</span>
+                  </Thumb>
+                  <div className="product-body">
+                    <div className="product-name">{product.name}</div>
+                    <div className="product-meta">
+                      {product.category} · {product.variants.length} option
+                      {product.variants.length > 1 ? 's' : ''}
+                    </div>
+                    <div className="product-price">
+                      {currency(product.minPrice)}
+                      {product.variants.length > 1 &&
+                        Math.max(...product.variants.map((v) => v.sellPrice)) !== product.minPrice && (
+                          <span className="small muted"> +</span>
+                        )}
+                      {product.listPrice > product.minPrice && (
+                        <span
+                          className="small muted"
+                          style={{ textDecoration: 'line-through', marginLeft: 6, fontWeight: 500 }}
+                        >
+                          {currency(product.listPrice)}
+                        </span>
                       )}
-                    {product.listPrice > product.minPrice && (
-                      <span
-                        className="small muted"
-                        style={{ textDecoration: 'line-through', marginLeft: 6, fontWeight: 500 }}
-                      >
-                        {currency(product.listPrice)}
-                      </span>
+                    </div>
+                    {out ? (
+                      <div className="small" style={{ color: 'var(--danger)' }}>
+                        Out of stock
+                      </div>
+                    ) : (
+                      product.totalStock <= state.settings.lowStockThreshold && (
+                        <div className="small" style={{ color: 'var(--warn)' }}>
+                          Low stock
+                        </div>
+                      )
                     )}
                   </div>
-                  {out ? (
-                    <div className="small" style={{ color: 'var(--danger)' }}>
-                      Out of stock
-                    </div>
-                  ) : (
-                    product.totalStock <= state.settings.lowStockThreshold && (
-                      <div className="small" style={{ color: 'var(--warn)' }}>
-                        Low stock
-                      </div>
-                    )
-                  )}
-                </div>
-              </button>
-            )
-          })}
-          {products.length === 0 && (
-            <div className="empty" style={{ gridColumn: '1 / -1' }}>
-              <h3>Nothing found</h3>
-              <p>Try another search term, or scan the product label.</p>
-            </div>
-          )}
+                </button>
+              )
+            })}
+            {products.length === 0 && (
+              <div className="empty" style={{ gridColumn: '1 / -1' }}>
+                <h3>Nothing found</h3>
+                <p>Try another search term, or scan the product label.</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
