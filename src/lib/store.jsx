@@ -1041,10 +1041,23 @@ export function AppProvider({ children }) {
           savePinRoster(next)
           return next
         })
+        // Where this till already was, if that is still a running show. A device
+        // sits on one stand all day and the people at it come and go, so a
+        // sign-in should not move it: reassigning on every login silently put
+        // somebody on a different exhibition — or on Direct sales when nothing
+        // was Active — and the Sales page, which opens scoped to the current
+        // location, then showed an empty table. It reads exactly like the day's
+        // takings have been lost, and they have not: they are filtered out.
+        const exhibitions = stateRef.current.exhibitions
+        const staying = exhibitions.find(
+          (exhibition) => exhibition.id === session.exhibitionId && exhibition.status === 'Active',
+        )
         const preferred =
-          stateRef.current.exhibitions.find(
+          staying ||
+          exhibitions.find(
             (exhibition) => exhibition.status === 'Active' && exhibition.staffIds.includes(account.id),
-          ) || stateRef.current.exhibitions.find((exhibition) => exhibition.status === 'Active')
+          ) ||
+          exhibitions.find((exhibition) => exhibition.status === 'Active')
         updateSession({ userId: account.id, exhibitionId: preferred?.id || null, signedInAt: nowIso() })
         return account
       },

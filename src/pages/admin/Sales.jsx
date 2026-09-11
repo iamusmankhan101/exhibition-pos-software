@@ -50,6 +50,20 @@ export default function Sales() {
   }, [state, scope, sellLocationId, from, to, salesperson, ownOnly, user.id, status, query])
 
   const summary = useMemo(() => salesSummary(orders), [orders])
+
+  /**
+   * Every sale this user may see, ignoring the location filter.
+   *
+   * The page opens scoped to whichever exhibition the till is currently on, and
+   * signing in reassigns that — so logging out and back in can silently move
+   * somebody to a different show, or to Direct sales when nothing is running.
+   * The whole day's takings then vanish from the screen and the empty state
+   * blamed the date range, which reads exactly like the data has been lost.
+   */
+  const totalVisible = useMemo(
+    () => filterOrders(state, { salespersonId: ownOnly ? user.id : undefined }).length,
+    [state, ownOnly, user.id],
+  )
   const selected = orderId ? state.orders.find((entry) => entry.id === orderId) : null
   const selection = useSelection(orders)
 
@@ -161,7 +175,22 @@ export default function Sales() {
       </div>
 
       {orders.length === 0 ? (
-        <EmptyState title="No sales match those filters">Try widening the date range or clearing the search.</EmptyState>
+        scope === 'exhibition' && totalVisible > 0 ? (
+          <EmptyState title={`No sales recorded at ${sellLocationName}`}>
+            Nothing has been lost — there {totalVisible === 1 ? 'is' : 'are'} {totalVisible} sale
+            {totalVisible === 1 ? '' : 's'} on this device, recorded somewhere else. Signing in picks the exhibition
+            the till is on, so a sale rung up at a different one is filtered out of this view.
+            <div style={{ marginTop: 12 }}>
+              <button className="btn" onClick={() => setScope('all')}>
+                Show all exhibitions
+              </button>
+            </div>
+          </EmptyState>
+        ) : (
+          <EmptyState title="No sales match those filters">
+            Try widening the date range or clearing the search.
+          </EmptyState>
+        )
       ) : (
         <div className="table-wrap">
           <table className="data">
