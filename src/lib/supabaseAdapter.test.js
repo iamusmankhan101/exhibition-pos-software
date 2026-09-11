@@ -14,6 +14,9 @@ const deletes = []
 /** Rows the stub hands back to a read, keyed by table. Empty unless a test fills it. */
 const tables = {}
 
+/** Every read the adapter issued, so a test can assert on columns and limits. */
+const reads = []
+
 const stubClient = {
   from(table) {
     return {
@@ -33,14 +36,45 @@ const stubClient = {
           },
         }
       },
-      select() {
-        const rows = tables[table] || []
-        // Awaitable for `select('*')` and chainable for `select().eq()`, so the
-        // one stub serves both the pull and the orphan-variant lookup.
-        return {
-          eq: () => Promise.resolve({ data: rows, error: null }),
-          then: (resolve) => resolve({ data: rows, error: null }),
+      select(columns) {
+        const read = { table, columns, range: null, ordered: false, in: null }
+        reads.push(read)
+        // Awaitable for `select('*')` and chainable for everything the pull
+        // builds on top of it, so the one stub serves the orphan-variant
+        // lookup, the windowed history reads and the second pass for images.
+        const result = () => {
+          let rows = tables[table] || []
+          if (read.in) rows = rows.filter((row) => read.in.values.includes(row[read.in.column]))
+          // PostgREST's window is inclusive at both ends, and a page shorter
+          // than the one asked for is how the caller learns it has reached the
+          // end — so the stub has to honour it or the pager never stops.
+          if (read.range) rows = rows.slice(read.range.from, read.range.to + 1)
+          // PostgREST returns the columns that were asked for and no others,
+          // and the pull leans on that: a column left out of the select is
+          // absent from the row, which is how it avoids re-sending an image.
+          if (columns && columns !== '*') {
+            const wanted = columns.split(',').map((name) => name.trim())
+            rows = rows.map((row) => Object.fromEntries(wanted.filter((name) => name in row).map((name) => [name, row[name]])))
+          }
+          return { data: rows, error: null }
         }
+        const chain = {
+          eq: () => Promise.resolve(result()),
+          order: () => {
+            read.ordered = true
+            return chain
+          },
+          range: (from, to) => {
+            read.range = { from, to }
+            return chain
+          },
+          in: (column, values) => {
+            read.in = { column, values }
+            return chain
+          },
+          then: (resolve) => resolve(result()),
+        }
+        return chain
       },
     }
   },
@@ -96,6 +130,7 @@ const rowsFor = (table) => writes.filter((write) => write.table === table).flatM
 beforeEach(() => {
   writes.length = 0
   deletes.length = 0
+  reads.length = 0
   for (const key of Object.keys(tables)) delete tables[key]
 })
 
@@ -396,6 +431,93 @@ describe('product images reach the database and come back', () => {
 
     const pulled = await pullEverything()
     expect(pulled.products[0].image).toBe(PHOTO)
+  })
+
+  it('is not fetched again by a refresh that already has it', async () => {
+    // The refresh runs every few seconds for the life of the show. Re-reading a
+    // base64 photograph on every tick is what would make it unaffordable on a
+    // stall's uplink, so a product the device already has a picture for comes
+    // back without the column — absent, so the merge keeps what it holds.
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    tables.products = [
+      { id: 'p1', name: 'Scarf', category: 'Scarves', collection: '', description: '', status: 'Active', image_url: PHOTO },
+    ]
+
+    const pulled = await pullEverything({ haveImagesFor: new Set(['p1']) })
+
+    const productReads = reads.filter((read) => read.table === 'products')
+    expect(productReads).toHaveLength(1)
+    expect(productReads[0].columns).not.toContain('image_url')
+    expect(pulled.products[0]).not.toHaveProperty('image')
+  })
+
+  it('is fetched for a product this device has never seen', async () => {
+    // A product added on the laptop has to arrive on the phone complete, or the
+    // till shows a nameless grey square until somebody reloads it.
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    tables.products = [
+      { id: 'p1', name: 'Scarf', category: '', collection: '', description: '', status: 'Active', image_url: PHOTO },
+      { id: 'p2', name: 'Bag', category: '', collection: '', description: '', status: 'Active', image_url: PHOTO },
+    ]
+
+    const pulled = await pullEverything({ haveImagesFor: new Set(['p1']) })
+
+    const [, second] = reads.filter((read) => read.table === 'products')
+    expect(second.in).toEqual({ column: 'id', values: ['p2'] })
+    // Asked for, and only for, the one it was missing.
+    expect(pulled.products.find((row) => row.id === 'p2').image).toBe(PHOTO)
+    expect(pulled.products.find((row) => row.id === 'p1')).not.toHaveProperty('image')
+  })
+
+  it('reads past the thousand-row cap', async () => {
+    // PostgREST truncates silently. A `variants` read that stopped at the cap
+    // would make every product past it look like it has no sizes, and the merge
+    // would write that over a device that had them.
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    tables.variants = Array.from({ length: 1200 }, (unused, index) => ({
+      id: `v${index}`,
+      product_id: 'p1',
+      sku: `SKU${index}`,
+      barcode: '',
+      size: '',
+      color: '',
+      price: 10,
+      exhibition_price: null,
+      cost: 5,
+      min_stock: 0,
+    }))
+    tables.products = [{ id: 'p1', name: 'Scarf', category: '', collection: '', description: '', status: 'Active', image_url: null }]
+
+    const pulled = await pullEverything()
+
+    expect(pulled.products[0].variants).toHaveLength(1200)
+    // Two pages: a full thousand, then the short one that says it is over.
+    expect(reads.filter((read) => read.table === 'variants').map((read) => read.range)).toEqual([
+      { from: 0, to: 999 },
+      { from: 1000, to: 1999 },
+    ])
+  })
+
+  it('stops at the window rather than paging the whole history', async () => {
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    tables.orders = Array.from({ length: 900 }, (unused, index) => ({
+      id: `o${index}`,
+      client_id: `c${index}`,
+      items: [],
+      payment_parts: [],
+      created_at: '2026-09-10T09:00:00Z',
+    }))
+
+    const pulled = await pullEverything({ historyLimit: 500 })
+
+    expect(pulled.orders).toHaveLength(500)
+    const [read] = reads.filter((entry) => entry.table === 'orders')
+    expect(read.range).toEqual({ from: 0, to: 499 })
+    // Newest first, or the window would be the oldest 500 rows of the show.
+    expect(read.ordered).toBe(true)
+    // The catalogue is never windowed: a product left out is one the till
+    // cannot sell.
+    expect(reads.find((entry) => entry.table === 'products').ordered).toBe(false)
   })
 
   it('clears the column when the image really was removed', async () => {

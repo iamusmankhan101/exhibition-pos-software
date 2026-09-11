@@ -248,7 +248,50 @@ realistic attack — somebody left alone with the tablet, or a script driving th
 enforcement needs the server, which is why `signIn` prefers Supabase whenever it is configured: its
 own limiter sits behind this one and cannot be reset from the browser.
 
+### Coming back down
+
+The outbox only ever pushed. Every mutation went up, and the only thing that came back was the
+one-shot catalogue pull a brand-new device runs at first sign-in — which refuses to run on a device
+that already holds anything, precisely so it cannot overwrite unsynced sales. Two tills that had
+both been set up therefore never learnt anything from each other again: products added on the
+laptop never reached the phone, sales taken on the phone never reached the laptop's reports.
+
+`mergeCloud` in `src/lib/merge.js` is the other half. A signed-in device refreshes every
+`PULL_INTERVAL_MS` (20s), immediately when a backgrounded tab comes back to the front, and on demand
+from **Activity → Sync queue → Refresh now**. One rule governs what a pull may do: *nothing this
+device has not sent yet may be lost to something the server said.*
+
+- **History** — orders, payments, returns, stock movements, audit — is append-only, so it unions by
+  id. A sale from the other till is added; a sale still sitting in this queue is kept.
+- **The catalogue** is mutable and carries no per-row version, so the server wins — but only while
+  the outbox is empty. With anything pending, this device's copy is by definition the newer one, and
+  the catalogue waits until the queue drains a few seconds later.
+- **Inventory** is a balance rather than a record, and both sides stamp `updatedAt` when they move
+  one, so the newer stamp wins cell by cell.
+- **Staff and roles** stay with `refreshIdentity`, which is the only path that reads `pin_hash`. A
+  pulled staff row is mapped for display and has none; letting it land would break PIN sign-in.
+
+Two things keep it affordable to run on a timer for the length of a show. Product images are base64
+data URLs living in the row, so the refresh names the products it already has a picture for and
+those rows come back without the column at all — absent rather than null, so the merge keeps what
+the device holds. And the append-only tables come back as the most recent `PULL_HISTORY_LIMIT` rows
+rather than the whole history of the show, which is safe precisely because the merge unions: a
+shorter window means a device backfills less of someone else's past, never that it loses its own.
+When the merge finds nothing new it hands back the same state object it was given, and the write to
+IndexedDB and the re-render are both skipped.
+
+Every read is paged to the end. PostgREST caps a response at a thousand rows and says so only by
+returning a short list, which reads exactly like a small table — a truncated `variants` read would
+make every product past the cap look like it has no sizes, and the merge would then write that
+emptiness over a device that had them.
+
 ### What is not done yet
+
+**Deletions do not propagate.** A product deleted on the laptop stays on the phone until it is
+deleted there too. Absence from a pull cannot be told apart from a row created here and not yet
+sent, and a device whose catalogue predates the backend has a queue claiming it is fully synced
+while the server has never seen any of it — so inferring deletion would eventually mean wiping a
+shop's products off its own till. Propagating them properly needs a tombstone table.
 
 Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
 sells at the same stand, three things need to move server-side:
@@ -261,8 +304,8 @@ sells at the same stand, three things need to move server-side:
 - **`balanceAfter` on stock movements** is currently computed from the device's local view, so
   interleaved writes from two devices will record misleading running balances.
 
-`pullEverything()` exists for a cold bootstrap but deliberately does not merge into a device that
-already holds unsynced sales — guessing there is how a day's takings goes missing.
+Until then, two tills selling the same shelf converge on last-writer-wins for that cell rather than
+on a correct count.
 
 ## Installable app (PWA)
 
@@ -312,7 +355,8 @@ src/
     idb.js         IndexedDB wrapper
     seed.js        default settings, roles and the empty starting dataset
     supabase.js    optional Supabase client, loaded on demand
-    supabaseAdapter.js  outbox → Supabase, and the cold bootstrap pull
+    supabaseAdapter.js  outbox → Supabase, and the pull back down
+    merge.js            folding a pull into a device that is already trading
     *.test.js      rule tests and the acceptance run
 supabase/
   schema.sql       tables, indexes, RLS policies, realtime

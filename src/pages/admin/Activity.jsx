@@ -9,6 +9,7 @@ export default function Activity() {
   const [tab, setTab] = useState('audit')
   const [query, setQuery] = useState('')
   const [push, setPush] = useState(null)
+  const [pull, setPull] = useState(null)
 
   const logs = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -112,7 +113,47 @@ export default function Activity() {
             <div className="small muted">
               Every change is queued with a client-generated idempotency key. When the connection drops the queue
               keeps growing locally; once it returns the queue drains in order and duplicate keys are rejected, so a
-              replayed sale can never be recorded twice.
+              replayed sale can never be recorded twice. In the other direction this device checks for everyone
+              else's work every few seconds, so a product added on the laptop reaches the phone on its own.
+            </div>
+          </div>
+
+          <div className="card" style={{ padding: 14 }}>
+            <div style={{ fontWeight: 620, fontSize: 13.5 }}>Refresh from the cloud</div>
+            <div className="small muted" style={{ marginTop: 4 }}>
+              Runs automatically in the background. Use this when somebody is standing there waiting for something
+              another till has only just added. It never overwrites work this device has not sent yet — anything in
+              the queue above is left alone until it drains.
+            </div>
+            <div className="row wrap" style={{ gap: 10, marginTop: 12, alignItems: 'center' }}>
+              <button
+                className="btn"
+                disabled={!online || pull?.running}
+                onClick={async () => {
+                  setPull({ running: true, label: 'Checking…' })
+                  try {
+                    const changed = await actions.pullAll()
+                    setPull({
+                      running: false,
+                      label: changed ? 'Brought this device up to date.' : 'Already up to date.',
+                    })
+                  } catch (error) {
+                    setPull({ running: false, label: `Failed: ${error.message}`, failed: true })
+                  }
+                }}
+              >
+                {pull?.running ? 'Refreshing…' : 'Refresh now'}
+              </button>
+              {pull && (
+                <span
+                  className={pull.failed ? 'small' : 'small muted'}
+                  style={pull.failed ? { color: 'var(--danger)' } : undefined}
+                  role={pull.failed ? 'alert' : undefined}
+                >
+                  {pull.label}
+                </span>
+              )}
+              {!online && <span className="small muted">Offline — connect to refresh.</span>}
             </div>
           </div>
 

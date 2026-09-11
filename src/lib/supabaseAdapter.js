@@ -497,13 +497,65 @@ export function createSupabaseAdapter({ getState }) {
 /* ------------------------------------------------------------ bootstrap */
 
 /**
+ * Every product column except the picture. See `haveImagesFor` below.
+ */
+const PRODUCT_COLUMNS = 'id, name, category, collection, description, status'
+
+/** Append-only tables, where `historyLimit` means "the most recent N". */
+const HISTORY_TABLES = new Set(['orders', 'payments', 'returns', 'stock_movements', 'audit_logs'])
+
+/**
+ * Rows per request on a read.
+ *
+ * PostgREST caps a response — a thousand by default — and says so only by
+ * handing back a short list, which reads exactly like a small table. That is
+ * not a detail the pull can shrug off: a truncated `variants` read would leave
+ * every product past the cap looking like it has no sizes at all, and the merge
+ * would then write that emptiness over a device that had them. So every read
+ * here is paged to the end.
+ */
+const READ_PAGE = 1000
+
+/** Ids per `in (...)` lookup. Kept well under the cap so the URL stays sane. */
+const IMAGE_LOOKUP_CHUNK = 100
+
+/**
+ * Reads a table to the end, a page at a time.
+ *
+ * `limit` stops it early — the most recent N rows — for the append-only tables
+ * a refresh only wants a recent window of.
+ */
+async function readAll(table, columns, limit) {
+  const rows = []
+  for (;;) {
+    const size = limit ? Math.min(READ_PAGE, limit - rows.length) : READ_PAGE
+    if (size <= 0) break
+    let request = sb.from(table).select(columns)
+    if (limit) request = request.order('created_at', { ascending: false })
+    const { data, error } = await request.range(rows.length, rows.length + size - 1)
+    if (error) throw new Error(`${table}: ${error.message}`)
+    rows.push(...(data || []))
+    // A short page is the end of the table; a full one might not be.
+    if (!data || data.length < size) break
+  }
+  return rows
+}
+
+/**
  * Pulls the whole dataset down into the local state shape.
  *
- * Used when a fresh device signs in and has nothing yet. It deliberately does
- * not merge — merging a device that already holds unsynced sales is the phase 2
- * problem, and quietly guessing here would be how a sale goes missing.
+ * Used when a fresh device signs in and has nothing yet, and again on every
+ * refresh once `mergeCloud` gave the app a safe way to fold a pull into a
+ * device that already holds data.
+ *
+ * `haveImagesFor` is the set of product ids whose picture the caller already
+ * has. A product image is a base64 data URL living in the row, so a refresh on
+ * a timer that re-fetched them would drag megabytes down a stall's uplink every
+ * tick, forever. Those rows come back without the column at all — absent, not
+ * null — and the merge keeps the copy already on the device. Pass nothing and
+ * the pull is complete, which is what first sign-in wants.
  */
-export async function pullEverything() {
+export async function pullEverything({ haveImagesFor = null, historyLimit = null } = {}) {
   if (!isConfigured) throw new Error('Supabase is not configured.')
   sb = sb || (await getSupabase())
 
@@ -515,9 +567,31 @@ export async function pullEverything() {
 
   const loaded = {}
   for (const table of tables) {
-    const { data, error } = await sb.from(table).select('*')
-    if (error) throw new Error(`${table}: ${error.message}`)
-    loaded[table] = data || []
+    const columns = table === 'products' && haveImagesFor ? PRODUCT_COLUMNS : '*'
+    // A refresh wants what has happened lately, not the whole history of the
+    // show over and over. Safe to cut short: the merge unions by id and keeps
+    // every row already on the device, so a shorter window can only mean a
+    // device backfills less of somebody else's past — never that it loses its
+    // own. A first sign-in passes no limit and takes the lot.
+    const limit = historyLimit && HISTORY_TABLES.has(table) ? historyLimit : null
+    loaded[table] = await readAll(table, columns, limit)
+  }
+
+  // Second pass for the pictures the device is actually missing — a product
+  // added on another till still arrives with its image on the very next tick.
+  if (haveImagesFor) {
+    const missing = loaded.products.filter((row) => !haveImagesFor.has(row.id)).map((row) => row.id)
+    const images = new Map()
+    for (const batch of chunked(missing, IMAGE_LOOKUP_CHUNK)) {
+      const { data, error } = await sb.from('products').select('id, image_url').in('id', batch)
+      if (error) throw new Error(`products: ${error.message}`)
+      for (const row of data || []) images.set(row.id, row.image_url)
+    }
+    if (images.size) {
+      loaded.products = loaded.products.map((row) =>
+        images.has(row.id) ? { ...row, image_url: images.get(row.id) } : row,
+      )
+    }
   }
 
   const inventory = {}
@@ -570,7 +644,9 @@ export async function pullEverything() {
       collection: row.collection,
       description: row.description,
       status: row.status,
-      image: row.image_url,
+      // Left out entirely when the pull skipped the column, so that the merge
+      // keeps the picture this device already holds. `null` would wipe it.
+      ...('image_url' in row ? { image: row.image_url } : {}),
       variants: variantsByProduct[row.id] || [],
     })),
     exhibitions: loaded.exhibitions.map((row) => ({

@@ -23,6 +23,7 @@ import {
   transferStock,
 } from './domain.js'
 import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
+import { hasPendingWork, mergeCloud } from './merge.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
 import { createSupabaseAdapter, pullEverything, pushEverything } from './supabaseAdapter.js'
@@ -166,6 +167,24 @@ export const slimPayload = (type, payload) =>
  */
 export const SYNCED_KEPT = 200
 
+/**
+ * How often a device asks the server what everyone else has been doing.
+ *
+ * A compromise between a stall that feels live and one that spends the show
+ * talking to the network. Stock sold on the other till shows up within half a
+ * minute, which is well inside the time it takes to walk a customer over.
+ */
+export const PULL_INTERVAL_MS = 20000
+
+/**
+ * How far back a refresh reads the append-only tables.
+ *
+ * PostgREST caps a response at a thousand rows anyway, and the merge unions by
+ * id, so this only bounds how much of another till's past a device backfills —
+ * never what it keeps. A first sign-in pulls without a limit.
+ */
+export const PULL_HISTORY_LIMIT = 500
+
 export function pruneOutbox(outbox) {
   const synced = outbox.filter((entry) => entry.status === 'synced')
   if (synced.length <= SYNCED_KEPT) return outbox
@@ -239,6 +258,10 @@ export function AppProvider({ children }) {
   const [online, setOnline] = useState(navigator.onLine)
   const [syncing, setSyncing] = useState(false)
   const [toasts, setToasts] = useState([])
+
+  // Boot finished. Effects that only need to know the app has data depend on
+  // this rather than on `state`, which changes on every keystroke of every sale.
+  const ready = Boolean(state)
 
   const deviceId = useMemo(getDeviceId, [])
   const deviceCode = useMemo(() => deviceCodeFrom(deviceId), [deviceId])
@@ -507,6 +530,65 @@ export function AppProvider({ children }) {
     [deviceId],
   )
 
+  /**
+   * Pulls the staff list and roles down and merges them into local state.
+   *
+   * Only identity — never sales. Replacing the whole dataset here would
+   * throw away anything this device took offline and has not yet synced,
+   * which is precisely how a day's takings goes missing.
+   */
+  const refreshIdentity = useCallback(async (authUser) => {
+    const sb = await getSupabase()
+    if (!sb) return null
+
+    const [staffResult, roleResult] = await Promise.all([
+      sb.from('staff').select('*'),
+      sb.from('roles').select('*'),
+    ])
+    // Surface a failed query rather than letting it look like an empty
+    // table — the two need very different fixes and the message is the only
+    // clue anyone gets.
+    if (staffResult.error) throw new Error(`Could not read staff: ${staffResult.error.message}`)
+    const staffRows = staffResult.data
+    const roleRows = roleResult.data
+
+    const users = (staffRows || []).map((row) => ({
+      id: row.id,
+      authId: row.auth_id,
+      name: row.name,
+      email: row.email,
+      role: row.role,
+      active: row.active,
+      maxDiscountPercent: row.max_discount_percent ?? undefined,
+      pinHash: row.pin_hash || '',
+      pinSalt: row.pin_salt || '',
+      createdAt: row.created_at,
+    }))
+
+    const roles = (roleRows || []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description || '',
+      system: row.system,
+      permissions: row.permissions || [],
+      maxDiscountPercent: Number(row.max_discount_percent) || 0,
+    }))
+
+    if (users.length) {
+      setState((current) => ({
+        ...current,
+        users,
+        roles: roles.length ? roles : current.roles,
+      }))
+    }
+
+    return (
+      users.find((entry) => entry.authId === authUser?.id) ||
+      users.find((entry) => normaliseEmail(entry.email) === normaliseEmail(authUser?.email)) ||
+      null
+    )
+  }, [setState])
+
   /* ---------------------------------------------------------- sync loop */
 
   // Point the outbox at Supabase when credentials are present. Without them the
@@ -527,6 +609,87 @@ export function AppProvider({ children }) {
       window.removeEventListener('offline', goOffline)
     }
   }, [])
+
+  /**
+   * Brings the rest of the shop's work down onto this device.
+   *
+   * The counterpart to the outbox, and the half that was missing: sync only
+   * ever pushed, so a till that had been set up never learnt anything again.
+   * Products added on the laptop never reached the phone, and sales taken on
+   * the phone never reached the laptop's reports.
+   *
+   * Cheap enough to run on a timer. Product pictures are base64 in the row, so
+   * only the ones this device has never seen are asked for, and the append-only
+   * tables come back as a recent window rather than the whole history of the
+   * show. `mergeCloud` decides what may land; it returns the state object
+   * untouched when the server had nothing new, and `applyState` then skips the
+   * write and the re-render entirely.
+   */
+  const pullFromCloud = useCallback(async () => {
+    if (!supabaseConfigured || !navigator.onLine || !stateRef.current) return false
+
+    const haveImagesFor = new Set(
+      (stateRef.current.products || []).filter((product) => product.image).map((product) => product.id),
+    )
+    const pulled = await pullEverything({ haveImagesFor, historyLimit: PULL_HISTORY_LIMIT })
+
+    let changed = false
+    applyState((current) => {
+      const result = mergeCloud(current, pulled)
+      changed = result.changed
+      return result.state
+    })
+
+    // Staff and roles are a wholesale replace carrying the PIN hashes, so they
+    // go through the one function that reads that column — and only while the
+    // queue is empty, because a replace would drop an account created here and
+    // not yet sent.
+    if (!hasPendingWork(stateRef.current)) {
+      await refreshIdentity(null).catch(() => {})
+    }
+    return changed
+  }, [applyState, refreshIdentity])
+
+  /**
+   * The refresh loop.
+   *
+   * Runs only for a signed-in device: row-level security answers an anonymous
+   * caller with empty tables, which would be a request every tick to learn
+   * nothing. It pauses on a hidden tab — a phone in a pocket has no use for
+   * fresh stock figures — and catches up the moment one comes back to the
+   * front, which is what someone picking the device up actually expects.
+   */
+  useEffect(() => {
+    if (!ready || !supabaseConfigured || !session.userId) return undefined
+    let stopped = false
+    let running = false
+
+    const refresh = async () => {
+      if (stopped || running || !navigator.onLine || document.hidden) return
+      running = true
+      try {
+        await pullFromCloud()
+      } catch {
+        // Offline, mid-deploy, a dropped venue connection: the next tick retries.
+      } finally {
+        running = false
+      }
+    }
+
+    refresh()
+    const interval = setInterval(refresh, PULL_INTERVAL_MS)
+    const catchUp = () => {
+      if (!document.hidden) refresh()
+    }
+    document.addEventListener('visibilitychange', catchUp)
+    window.addEventListener('online', catchUp)
+    return () => {
+      stopped = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', catchUp)
+      window.removeEventListener('online', catchUp)
+    }
+  }, [ready, session.userId, pullFromCloud])
 
   useEffect(() => {
     if (!state) return undefined
@@ -837,64 +1000,7 @@ export function AppProvider({ children }) {
         return adopted
       },
 
-      /**
-       * Pulls the staff list and roles down and merges them into local state.
-       *
-       * Only identity — never sales. Replacing the whole dataset here would
-       * throw away anything this device took offline and has not yet synced,
-       * which is precisely how a day's takings goes missing.
-       */
-      async refreshIdentity(authUser) {
-        const sb = await getSupabase()
-        if (!sb) return null
-
-        const [staffResult, roleResult] = await Promise.all([
-          sb.from('staff').select('*'),
-          sb.from('roles').select('*'),
-        ])
-        // Surface a failed query rather than letting it look like an empty
-        // table — the two need very different fixes and the message is the only
-        // clue anyone gets.
-        if (staffResult.error) throw new Error(`Could not read staff: ${staffResult.error.message}`)
-        const staffRows = staffResult.data
-        const roleRows = roleResult.data
-
-        const users = (staffRows || []).map((row) => ({
-          id: row.id,
-          authId: row.auth_id,
-          name: row.name,
-          email: row.email,
-          role: row.role,
-          active: row.active,
-          maxDiscountPercent: row.max_discount_percent ?? undefined,
-          pinHash: row.pin_hash || '',
-          pinSalt: row.pin_salt || '',
-          createdAt: row.created_at,
-        }))
-
-        const roles = (roleRows || []).map((row) => ({
-          id: row.id,
-          name: row.name,
-          description: row.description || '',
-          system: row.system,
-          permissions: row.permissions || [],
-          maxDiscountPercent: Number(row.max_discount_percent) || 0,
-        }))
-
-        if (users.length) {
-          setState((current) => ({
-            ...current,
-            users,
-            roles: roles.length ? roles : current.roles,
-          }))
-        }
-
-        return (
-          users.find((entry) => entry.authId === authUser?.id) ||
-          users.find((entry) => normaliseEmail(entry.email) === normaliseEmail(authUser?.email)) ||
-          null
-        )
-      },
+      refreshIdentity,
 
       async signUp({ name, email, password }) {
         guard()
@@ -1794,6 +1900,22 @@ export function AppProvider({ children }) {
       /* cloud */
 
       /**
+       * Fetches everything this device is missing, on demand.
+       *
+       * The same refresh the loop runs, wired to a button for the moment
+       * somebody is standing there waiting for a product another till just
+       * added rather than watching the clock.
+       */
+      async pullAll() {
+        guard()
+        if (!supabaseConfigured) {
+          throw new Error('This build has no Supabase credentials, so there is nothing to pull from.')
+        }
+        if (!navigator.onLine) throw new Error('You need to be online to pull from the cloud.')
+        return pullFromCloud()
+      },
+
+      /**
        * Sends everything this device holds up to Supabase.
        *
        * The incremental queue only ever carried new mutations, and anything
@@ -1965,6 +2087,8 @@ export function AppProvider({ children }) {
     deviceCode,
     updateSession,
     persist,
+    refreshIdentity,
+    pullFromCloud,
   ])
 
   const value = useMemo(
