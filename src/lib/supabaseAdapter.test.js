@@ -20,6 +20,9 @@ const reads = []
 /** Set by a test to make every write fail the way PostgREST would. */
 let writeError = null
 
+/** Set by a test to make reads of a named table fail. */
+let readError = null
+
 const stubClient = {
   from(table) {
     return {
@@ -46,6 +49,7 @@ const stubClient = {
         // builds on top of it, so the one stub serves the orphan-variant
         // lookup, the windowed history reads and the second pass for images.
         const result = () => {
+          if (readError?.[table]) return { data: null, error: readError[table] }
           let rows = tables[table] || []
           if (read.in) rows = rows.filter((row) => read.in.values.includes(row[read.in.column]))
           // PostgREST's window is inclusive at both ends, and a page shorter
@@ -135,6 +139,7 @@ beforeEach(() => {
   deletes.length = 0
   reads.length = 0
   writeError = null
+  readError = null
   for (const key of Object.keys(tables)) delete tables[key]
 })
 
@@ -381,6 +386,32 @@ describe('supabase adapter', () => {
  * stayed open, with a green "Synced" badge on screen and nothing reaching the
  * other till.
  */
+describe('deletions', () => {
+  it('come back as a lookup the merge can use', async () => {
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    tables.deletions = [
+      { id: 'o1', device_id: 'dev_a', deleted_at: '2026-09-11T10:00:00Z' },
+      { id: 'p7', device_id: 'dev_b', deleted_at: '2026-09-11T10:05:00Z' },
+    ]
+
+    const pulled = await pullEverything()
+    expect(pulled.deletions).toEqual({ o1: '2026-09-11T10:00:00Z', p7: '2026-09-11T10:05:00Z' })
+  })
+
+  it('do not take the whole pull down when the table is not there yet', async () => {
+    // The table arrived after the first deployments. Losing every other table
+    // because gravestones are missing would turn a feature that is not deployed
+    // into an outage.
+    const { pullEverything } = await import('./supabaseAdapter.js')
+    readError = { deletions: { code: '42P01', message: 'relation "deletions" does not exist' } }
+    tables.orders = [{ id: 'o1', client_id: 'c1', items: [], payment_parts: [], created_at: '' }]
+
+    const pulled = await pullEverything()
+    expect(pulled.deletions).toEqual({})
+    expect(pulled.orders).toHaveLength(1)
+  })
+})
+
 describe('a backend that will not say who we are', () => {
   const authError = { code: 'PGRST301', message: 'No suitable key or wrong key type' }
 

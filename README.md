@@ -321,19 +321,26 @@ those rules the first time one changed. `auditLogs` and `notifications` are excl
 are capped and shed rows on their own — diffing those would blacklist good history every time the
 cap bit.
 
-A tombstone is dropped as soon as a pull comes back without the row: the delete has landed on the
-server too, and there is nothing left to protect against. That keeps the list self-cleaning, with a
-cap of `TOMBSTONES_KEPT` behind it. `refreshIdentity` filters through the same record, since
-replacing the staff list wholesale resurrects a deleted colleague exactly as readily.
+Local tombstones alone were not enough, and the reason is worth keeping. They were dropped as soon
+as a pull came back without the row, on the reasoning that the delete had landed and there was
+nothing left to guard. There was: the **other** till still had the sale, pushed it back up from its
+own queue, and with the tombstone gone the next pull welcomed it in as something new. The sale
+returned within the minute, over and over, on a device that had definitely deleted it.
+
+So deletions are recorded on the server too, in a `deletions` table — an id, a device and a time.
+That is the difference between a fact and an inference: absence from a pull is equally consistent
+with "somebody deleted it" and "this device made it and has not sent it yet", but a gravestone says
+which. It is the one thing a pull may remove a local row for, so a delete on the laptop now reaches
+the phone, including a phone that was switched off when it happened. Local tombstones stay as the
+immediate guard — they hold from the moment of the delete, before the command has reached anything —
+and are capped by `TOMBSTONES_KEPT` rather than expiring. `refreshIdentity` filters through the same
+record, since replacing the staff list wholesale resurrects a deleted colleague exactly as readily.
+
+**This needs `supabase/schema.sql` re-run on the project.** Until it is, the pull logs one warning
+and carries on with every other table — a feature that is not deployed yet must not present as an
+outage — and deletes simply stay local to the device that made them.
 
 ### What is not done yet
-
-**Deletions still do not propagate *between* devices.** A product deleted on the laptop stays on the
-phone until it is deleted there too — the tombstones above are local, and stop a device undoing its
-own deletes, not somebody else's. Absence from a pull cannot be told apart from a row created here
-and not yet sent, and a device whose catalogue predates the backend has a queue claiming it is fully
-synced while the server has never seen any of it, so inferring deletion would eventually mean wiping
-a shop's products off its own till. Propagating them needs a tombstone *table*, server-side.
 
 Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
 sells at the same stand, three things need to move server-side:

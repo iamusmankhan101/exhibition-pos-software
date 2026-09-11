@@ -296,6 +296,27 @@ create table if not exists sync_commands (
 
 create index if not exists sync_type_idx on sync_commands (type);
 
+-- Deletions, recorded rather than inferred.
+--
+-- Absence is not evidence: a row missing from a pull is equally consistent with
+-- "somebody deleted it" and "this device made it and has not sent it yet", and
+-- guessing wrong in the second direction wipes a shop's own data. So a delete
+-- writes its own gravestone here, and every device applies it.
+--
+-- Without this, deleting a sale did not stick. The till that deleted it removed
+-- it from the server, then the *other* till — which still had it — pushed it
+-- straight back up, and the first one pulled it down again as something new.
+-- The sale came back within a minute, over and over.
+--
+-- Append-only and tiny: an id, what kind of thing it was, and when.
+create table if not exists deletions (
+  id         text primary key,
+  device_id  text default '',
+  deleted_at timestamptz not null default now()
+);
+
+create index if not exists deletions_at_idx on deletions (deleted_at desc);
+
 /* -------------------------------------------------- invoice numbering */
 
 -- Phase 2: with more than one device, invoice numbers should come from here
@@ -321,6 +342,7 @@ alter table stock_movements enable row level security;
 alter table devices         enable row level security;
 alter table audit_logs      enable row level security;
 alter table sync_commands   enable row level security;
+alter table deletions       enable row level security;
 
 -- Is the caller a signed-in, active member of staff on a device that has not
 -- been blocked? Everything else builds on this.
@@ -354,7 +376,7 @@ begin
   foreach t in array array[
     'settings','roles','staff','products','variants','exhibitions','customers',
     'promo_codes','orders','payments','returns','inventory','stock_movements',
-    'devices','audit_logs','sync_commands'
+    'devices','audit_logs','sync_commands','deletions'
   ] loop
     execute format('drop policy if exists %I on %I', t || '_read', t);
     execute format(
@@ -375,6 +397,10 @@ create policy movements_write       on stock_movements for insert with check (ha
 create policy customers_write       on customers       for all    using (has_permission('pos'));
 create policy sync_write            on sync_commands   for insert with check (is_active_staff());
 create policy audit_write           on audit_logs      for insert with check (is_active_staff());
+-- Anyone who can take a sale can record that one was deleted; what they are
+-- allowed to delete in the first place is enforced on the table itself.
+create policy deletions_write       on deletions       for insert with check (is_active_staff());
+create policy deletions_update      on deletions       for update using (is_active_staff());
 create policy devices_write         on devices         for all    using (is_active_staff());
 
 -- The outbox retries, and the adapter writes every table with an upsert so that

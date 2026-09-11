@@ -569,6 +569,24 @@ const READ_PAGE = 1000
 const IMAGE_LOOKUP_CHUNK = 100
 
 /**
+ * Said once, not every twenty seconds for the life of the show.
+ *
+ * Deletions only propagate between devices once `supabase/schema.sql` has been
+ * re-run, so this is the message that explains why deleting a sale on one till
+ * leaves it on another.
+ */
+let warnedMissingDeletions = false
+function warnMissingDeletions(error) {
+  if (warnedMissingDeletions) return
+  warnedMissingDeletions = true
+  console.warn(
+    '[sync] the `deletions` table is missing, so deletes will not reach other devices. ' +
+      'Re-run supabase/schema.sql on the project to fix it. Original error:',
+    error?.message,
+  )
+}
+
+/**
  * Reads a table to the end, a page at a time.
  *
  * `limit` stops it early — the most recent N rows — for the append-only tables
@@ -611,7 +629,7 @@ export async function pullEverything({ haveImagesFor = null, historyLimit = null
   const tables = [
     'settings', 'roles', 'staff', 'products', 'variants', 'exhibitions',
     'customers', 'promo_codes', 'orders', 'payments', 'returns',
-    'inventory', 'stock_movements', 'devices', 'audit_logs',
+    'inventory', 'stock_movements', 'devices', 'audit_logs', 'deletions',
   ]
 
   const loaded = {}
@@ -623,6 +641,17 @@ export async function pullEverything({ haveImagesFor = null, historyLimit = null
     // device backfills less of somebody else's past — never that it loses its
     // own. A first sign-in passes no limit and takes the lot.
     const limit = historyLimit && HISTORY_TABLES.has(table) ? historyLimit : null
+    // `deletions` arrived after the first deployments, so a project whose
+    // schema has not been re-run does not have it. That must not take the whole
+    // pull down with it — losing every other table because gravestones are
+    // missing would turn a feature that is not there yet into an outage.
+    if (table === 'deletions') {
+      loaded[table] = await readAll(table, columns, limit).catch((error) => {
+        warnMissingDeletions(error)
+        return []
+      })
+      continue
+    }
     loaded[table] = await readAll(table, columns, limit)
   }
 
@@ -824,6 +853,9 @@ export async function pullEverything({ haveImagesFor = null, historyLimit = null
       revokedAt: row.revoked_at,
       userAgent: row.user_agent,
     })),
+    // What other tills have deleted. Explicit, unlike absence, so the merge is
+    // allowed to act on it.
+    deletions: Object.fromEntries((loaded.deletions || []).map((row) => [row.id, row.deleted_at])),
     auditLogs: loaded.audit_logs.map((row) => ({
       id: row.id,
       userId: row.user_id,
@@ -836,6 +868,28 @@ export async function pullEverything({ haveImagesFor = null, historyLimit = null
       createdAt: row.created_at,
     })),
   }
+}
+
+/**
+ * Records deletions this device has made.
+ *
+ * Separate from the command queue on purpose. A command says "delete these
+ * orders" and is consumed once; this is the standing fact that they are gone,
+ * which every other device needs to read long afterwards — including one that
+ * was switched off at the time and has the rows still sitting in its own copy.
+ *
+ * Upserted by id, so re-sending the same gravestone is free.
+ */
+export async function pushDeletions(rows) {
+  if (!isConfigured || !rows.length) return 0
+  sb = sb || (await getSupabase())
+  if (!sb) return 0
+
+  for (const batch of chunked(rows, PUSH_CHUNK)) {
+    const { error } = await sb.from('deletions').upsert(batch, { onConflict: 'id' })
+    if (error) throw fail('deletions', error)
+  }
+  return rows.length
 }
 
 /* ------------------------------------------------------------- backfill */

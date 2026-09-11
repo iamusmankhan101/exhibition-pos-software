@@ -80,12 +80,16 @@ const byNewest = (a, b) => String(b?.createdAt || '').localeCompare(String(a?.cr
  * product image it has already got: the key is absent from the server row, so
  * the local one survives the spread.
  *
- * Nothing is ever dropped for being absent from the server. It is not possible
+ * Nothing is ever dropped for being *absent* from the server. It is not possible
  * to tell a row deleted on another till from one created here and not yet sent,
  * and a device whose catalogue predates the backend has a queue that says it is
- * fully synced while the server has never seen any of it — so guessing here
- * would eventually mean wiping a shop's products off its own till. A delete
- * made elsewhere therefore has to be repeated on each device for now.
+ * fully synced while the server has never seen any of it — so guessing from
+ * absence would eventually mean wiping a shop's products off its own till.
+ *
+ * A row in `buried` is different, and is the only thing that may remove one. It
+ * is there because somebody deleted it: either this device, or another till
+ * that wrote a gravestone to the `deletions` table. That is a fact rather than
+ * an inference, which is what makes acting on it safe.
  *
  * The reverse is not a guess, and `buried` is what makes it safe: a row this
  * device deleted is remembered by id, so the server's copy is skipped rather
@@ -115,6 +119,10 @@ function unionById(local, server, { preferServer, sorted, buried }) {
   for (const row of local) {
     if (!row || seen.has(row.id)) continue
     seen.add(row.id)
+    // Dropped, not kept: a buried id is either one this device deleted (in
+    // which case the row is already gone and this costs nothing) or one another
+    // till deleted, which is how a deletion finally reaches this device at all.
+    if (buried.has(row.id)) continue
     merged.push(fromServer.get(row.id) || row)
   }
   for (const [id, row] of fromServer) {
@@ -154,7 +162,12 @@ function mergeInventory(local, server) {
  */
 export function mergeCloud(local, pulled) {
   const pending = hasPendingWork(local)
-  const buried = new Set(Object.keys(local.tombstones || {}))
+  // What this device deleted, plus what every other till has. A deletion the
+  // server is holding is explicit evidence — unlike absence, which is equally
+  // consistent with a row this device made and has not sent yet — so it is the
+  // one thing a pull is allowed to remove local rows for.
+  const deleted = pulled.deletions || {}
+  const buried = new Set([...Object.keys(local.tombstones || {}), ...Object.keys(deleted)])
   const next = { ...local }
   let changed = false
 
@@ -180,30 +193,6 @@ export function mergeCloud(local, pulled) {
   }
 
   take('inventory', mergeInventory(local.inventory || {}, pulled.inventory || {}))
-  // Nothing to settle on a device that has deleted nothing, and asking anyway
-  // would report a change on every idle pull — which is exactly the write and
-  // re-render the untouched-object path exists to avoid.
-  if (Object.keys(local.tombstones || {}).length) take('tombstones', settled(local.tombstones, pulled))
 
   return { state: changed ? next : local, changed }
-}
-
-/**
- * Drops the tombstones that have done their job.
- *
- * A deletion only needs remembering for as long as the server still has the
- * row. Once a pull comes back without it the delete has landed there too, and
- * the tombstone is just a name on a list — so it goes, and the list stays
- * bounded without anybody having to guess at an expiry.
- */
-function settled(tombstones, pulled) {
-  const onServer = new Set()
-  for (const key of [...HISTORY, ...CATALOGUE]) {
-    for (const row of pulled[key] || []) onServer.add(row?.id)
-  }
-  const kept = {}
-  for (const [id, at] of Object.entries(tombstones)) {
-    if (onServer.has(id)) kept[id] = at
-  }
-  return kept
 }

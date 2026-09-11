@@ -185,20 +185,59 @@ describe('something this device deleted', () => {
     expect(state.orders).toEqual([theirs])
   })
 
-  it('is forgotten once the server has forgotten it too', () => {
-    // The delete has landed on the server, so the row is gone from the pull and
-    // the tombstone has nothing left to protect against.
+  it('is remembered even after the server has forgotten the row', () => {
+    // This used to drop the tombstone the moment a pull came back without the
+    // row, on the reasoning that the delete had landed and there was nothing
+    // left to guard. There was: the *other* till still had the sale and pushed
+    // it straight back up, and with the tombstone gone the next pull welcomed
+    // it in as something new. The sale returned within the minute, every time.
     const { state } = mergeCloud(local({ orders: [], tombstones: { o1: '2026-09-10T09:05:00Z' } }), {
       orders: [],
     })
-    expect(state.tombstones).toEqual({})
+    expect(state.tombstones).toEqual({ o1: '2026-09-10T09:05:00Z' })
+  })
+})
+
+describe('something another till deleted', () => {
+  const order = { id: 'o1', total: 40, createdAt: '2026-09-10T09:00:00Z' }
+
+  it('is taken off this device too', () => {
+    // The gravestone is explicit, unlike absence, so it is the one thing a pull
+    // may remove a local row for. Without it a delete only ever held on the
+    // device that made it.
+    const { state } = mergeCloud(local({ orders: [order] }), {
+      orders: [order],
+      deletions: { o1: '2026-09-10T09:05:00Z' },
+    })
+    expect(state.orders).toEqual([])
   })
 
-  it('is kept for as long as the server still has the row', () => {
-    const { state } = mergeCloud(local({ orders: [], tombstones: { o1: '2026-09-10T09:05:00Z' } }), {
-      orders: [order],
+  it('applies to the catalogue as well', () => {
+    const product = { id: 'p1', name: 'Scarf', variants: [] }
+    const { state } = mergeCloud(local({ products: [product] }), {
+      products: [product],
+      deletions: { p1: '2026-09-10T09:05:00Z' },
     })
-    expect(state.tombstones).toEqual({ o1: '2026-09-10T09:05:00Z' })
+    expect(state.products).toEqual([])
+  })
+
+  it('reaches a device that was switched off at the time', () => {
+    // The row is still on this till and no longer on the server. Absence alone
+    // would not be enough to act on; the gravestone is.
+    const { state } = mergeCloud(local({ orders: [order] }), {
+      orders: [],
+      deletions: { o1: '2026-09-10T09:05:00Z' },
+    })
+    expect(state.orders).toEqual([])
+  })
+
+  it('leaves everything it does not name alone', () => {
+    const mine = { id: 'o2', total: 10, createdAt: '2026-09-10T11:00:00Z' }
+    const { state } = mergeCloud(local({ orders: [order, mine] }), {
+      orders: [],
+      deletions: { o1: '2026-09-10T09:05:00Z' },
+    })
+    expect(state.orders).toEqual([mine])
   })
 })
 

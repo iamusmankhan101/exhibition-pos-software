@@ -26,7 +26,13 @@ import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
 import { hasPendingWork, mergeCloud } from './merge.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
-import { createSupabaseAdapter, isAuthError, pullEverything, pushEverything } from './supabaseAdapter.js'
+import {
+  createSupabaseAdapter,
+  isAuthError,
+  pullEverything,
+  pushDeletions,
+  pushEverything,
+} from './supabaseAdapter.js'
 import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
 import {
   createCredential,
@@ -794,6 +800,21 @@ export function AppProvider({ children }) {
     )
     const pulled = await pullEverything({ haveImagesFor, historyLimit: PULL_HISTORY_LIMIT })
 
+    // Gravestones this device has made that the server has not got. Working it
+    // out by difference rather than tracking what has been sent means a push
+    // that failed simply happens again on the next pass, and one that succeeded
+    // is never repeated.
+    const missing = Object.entries(stateRef.current.tombstones || {})
+      .filter(([id]) => !(pulled.deletions || {})[id])
+      .map(([id, at]) => ({ id, device_id: deviceId, deleted_at: at }))
+    if (missing.length) {
+      // Also tolerant of the table not existing yet — see `pullEverything`.
+      await pushDeletions(missing).catch(() => {
+        // Next pass tries again. A delete that has not reached the server yet
+        // is still held locally by the tombstone, so nothing resurfaces here.
+      })
+    }
+
     let changed = false
     applyState((current) => {
       const result = mergeCloud(current, pulled)
@@ -809,7 +830,7 @@ export function AppProvider({ children }) {
       await refreshIdentity(null).catch(() => {})
     }
     return changed
-  }, [applyState, refreshIdentity])
+  }, [applyState, refreshIdentity, deviceId])
 
   /**
    * The refresh loop.
