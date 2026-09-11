@@ -92,6 +92,8 @@ export async function buildSeedState() {
     movements: [],
     auditLogs: [],
     notifications: [],
+    // Ids this device has deleted, so a pull cannot put them back.
+    tombstones: {},
     counters: { invoice: 1 },
     outbox: [],
     seededAt: new Date().toISOString(),

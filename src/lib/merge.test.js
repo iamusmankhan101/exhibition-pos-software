@@ -148,6 +148,60 @@ describe('the catalogue', () => {
   })
 })
 
+describe('something this device deleted', () => {
+  const order = { id: 'o1', total: 40, createdAt: '2026-09-10T09:00:00Z' }
+
+  it('stays deleted, even though the server still has it', () => {
+    // The delete is almost always still in the queue when the next pull lands,
+    // so the server does still have the row. Without the tombstone the union
+    // read that as "a sale we are missing" and put it straight back, seconds
+    // after somebody deleted it.
+    const { state } = mergeCloud(local({ orders: [], tombstones: { o1: '2026-09-10T09:05:00Z' } }), {
+      orders: [order],
+    })
+    expect(state.orders).toEqual([])
+  })
+
+  it('stays deleted while the queue still holds the command', () => {
+    const { state } = mergeCloud(
+      local({ orders: [], outbox: pending, tombstones: { o1: '2026-09-10T09:05:00Z' } }),
+      { orders: [order] },
+    )
+    expect(state.orders).toEqual([])
+  })
+
+  it('applies to the catalogue too', () => {
+    const { state } = mergeCloud(local({ products: [], tombstones: { p1: '2026-09-10T09:05:00Z' } }), {
+      products: [{ id: 'p1', name: 'Scarf', variants: [] }],
+    })
+    expect(state.products).toEqual([])
+  })
+
+  it('does not bury anything else', () => {
+    const theirs = { id: 'o2', total: 10, createdAt: '2026-09-10T10:00:00Z' }
+    const { state } = mergeCloud(local({ orders: [], tombstones: { o1: '2026-09-10T09:05:00Z' } }), {
+      orders: [order, theirs],
+    })
+    expect(state.orders).toEqual([theirs])
+  })
+
+  it('is forgotten once the server has forgotten it too', () => {
+    // The delete has landed on the server, so the row is gone from the pull and
+    // the tombstone has nothing left to protect against.
+    const { state } = mergeCloud(local({ orders: [], tombstones: { o1: '2026-09-10T09:05:00Z' } }), {
+      orders: [],
+    })
+    expect(state.tombstones).toEqual({})
+  })
+
+  it('is kept for as long as the server still has the row', () => {
+    const { state } = mergeCloud(local({ orders: [], tombstones: { o1: '2026-09-10T09:05:00Z' } }), {
+      orders: [order],
+    })
+    expect(state.tombstones).toEqual({ o1: '2026-09-10T09:05:00Z' })
+  })
+})
+
 describe('stock balances', () => {
   const cell = (quantity, updatedAt) => ({ locationId: 'ex1', variantId: 'v1', quantity, updatedAt })
 

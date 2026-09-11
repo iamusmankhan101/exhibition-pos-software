@@ -87,16 +87,23 @@ const byNewest = (a, b) => String(b?.createdAt || '').localeCompare(String(a?.cr
  * would eventually mean wiping a shop's products off its own till. A delete
  * made elsewhere therefore has to be repeated on each device for now.
  *
+ * The reverse is not a guess, and `buried` is what makes it safe: a row this
+ * device deleted is remembered by id, so the server's copy is skipped rather
+ * than welcomed back as something we were missing. Without it a deleted sale
+ * reappeared within seconds — the delete command was usually still sitting in
+ * the queue, so the server still had the row, and the union dutifully restored
+ * it.
+ *
  * `order` keeps history newest-first, the way every screen reads it, and leaves
  * the catalogue in the order the device already had it: rows come off the pull
  * with no `createdAt` at all, so sorting them would shuffle the products list
  * under the user for no gain.
  */
-function unionById(local, server, { preferServer, sorted }) {
+function unionById(local, server, { preferServer, sorted, buried }) {
   const mine = new Map(local.map((row) => [row?.id, row]))
   const fromServer = new Map()
   for (const row of server) {
-    if (!row || fromServer.has(row.id)) continue
+    if (!row || fromServer.has(row.id) || buried.has(row.id)) continue
     const held = mine.get(row.id)
     fromServer.set(row.id, !held ? row : preferServer ? { ...held, ...row } : held)
   }
@@ -147,6 +154,7 @@ function mergeInventory(local, server) {
  */
 export function mergeCloud(local, pulled) {
   const pending = hasPendingWork(local)
+  const buried = new Set(Object.keys(local.tombstones || {}))
   const next = { ...local }
   let changed = false
 
@@ -159,12 +167,12 @@ export function mergeCloud(local, pulled) {
   // Safe with a full queue: a union only ever adds rows this device is missing,
   // and with work pending the local copy of a row it already has stays put.
   for (const key of HISTORY) {
-    take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: !pending, sorted: true }))
+    take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: !pending, sorted: true, buried }))
   }
 
   if (!pending) {
     for (const key of CATALOGUE) {
-      take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: true, sorted: false }))
+      take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: true, sorted: false, buried }))
     }
     // Absent rather than undefined when the server has never written a settings
     // row — spreading that over the state would blank the local defaults.
@@ -172,6 +180,30 @@ export function mergeCloud(local, pulled) {
   }
 
   take('inventory', mergeInventory(local.inventory || {}, pulled.inventory || {}))
+  // Nothing to settle on a device that has deleted nothing, and asking anyway
+  // would report a change on every idle pull — which is exactly the write and
+  // re-render the untouched-object path exists to avoid.
+  if (Object.keys(local.tombstones || {}).length) take('tombstones', settled(local.tombstones, pulled))
 
   return { state: changed ? next : local, changed }
+}
+
+/**
+ * Drops the tombstones that have done their job.
+ *
+ * A deletion only needs remembering for as long as the server still has the
+ * row. Once a pull comes back without it the delete has landed there too, and
+ * the tombstone is just a name on a list — so it goes, and the list stays
+ * bounded without anybody having to guess at an expiry.
+ */
+function settled(tombstones, pulled) {
+  const onServer = new Set()
+  for (const key of [...HISTORY, ...CATALOGUE]) {
+    for (const row of pulled[key] || []) onServer.add(row?.id)
+  }
+  const kept = {}
+  for (const [id, at] of Object.entries(tombstones)) {
+    if (onServer.has(id)) kept[id] = at
+  }
+  return kept
 }

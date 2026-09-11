@@ -307,13 +307,33 @@ password box that re-establishes the connection without disturbing the shift. Si
 of the till to fix this would mean abandoning whatever is on the POS at the time, for a problem that
 is entirely the backend's.
 
+### Deleting things
+
+A delete has to survive the next pull, and at first it did not: deleting a sale put it back within
+seconds. The delete command was still in the queue, so the server still held the row, and the union
+read that row as *a sale this device is missing* and restored it.
+
+Absence is not evidence in either direction, so the device keeps its own record. `withTombstones`
+diffs the state before and after a delete and remembers the ids that went, and `mergeCloud` skips a
+server row whose id is buried. The diff matters: removing an exhibition cascades into its sales,
+payments, stock movements and returns, and a hand-written list of ids would drift out of step with
+those rules the first time one changed. `auditLogs` and `notifications` are excluded because both
+are capped and shed rows on their own — diffing those would blacklist good history every time the
+cap bit.
+
+A tombstone is dropped as soon as a pull comes back without the row: the delete has landed on the
+server too, and there is nothing left to protect against. That keeps the list self-cleaning, with a
+cap of `TOMBSTONES_KEPT` behind it. `refreshIdentity` filters through the same record, since
+replacing the staff list wholesale resurrects a deleted colleague exactly as readily.
+
 ### What is not done yet
 
-**Deletions do not propagate.** A product deleted on the laptop stays on the phone until it is
-deleted there too. Absence from a pull cannot be told apart from a row created here and not yet
-sent, and a device whose catalogue predates the backend has a queue claiming it is fully synced
-while the server has never seen any of it — so inferring deletion would eventually mean wiping a
-shop's products off its own till. Propagating them properly needs a tombstone table.
+**Deletions still do not propagate *between* devices.** A product deleted on the laptop stays on the
+phone until it is deleted there too — the tombstones above are local, and stop a device undoing its
+own deletes, not somebody else's. Absence from a pull cannot be told apart from a row created here
+and not yet sent, and a device whose catalogue predates the backend has a queue claiming it is fully
+synced while the server has never seen any of it, so inferring deletion would eventually mean wiping
+a shop's products off its own till. Propagating them needs a tombstone *table*, server-side.
 
 Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
 sells at the same stand, three things need to move server-side:

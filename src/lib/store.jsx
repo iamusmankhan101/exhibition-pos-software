@@ -185,6 +185,67 @@ export const PULL_INTERVAL_MS = 20000
  */
 export const PULL_HISTORY_LIMIT = 500
 
+/**
+ * How many deletions this device remembers having made.
+ *
+ * Capped like everything else that lives in the state blob. Five hundred is far
+ * more than a show produces, and a tombstone is finished long before it falls
+ * off the end — see `mergeCloud`, which drops one as soon as the server has
+ * forgotten the row too.
+ */
+export const TOMBSTONES_KEPT = 500
+
+/**
+ * Collections a pull can put back, and so the ones a deletion must be recorded
+ * against.
+ *
+ * `auditLogs` and `notifications` are deliberately absent. Both are capped, so
+ * rows fall off the end of them in normal use — diffing those would mint a
+ * tombstone every time the cap bit and permanently blacklist perfectly good
+ * history. The outbox is this device's own and is never pulled.
+ */
+const TOMBSTONED = [
+  'orders', 'payments', 'returns', 'movements',
+  'products', 'customers', 'exhibitions', 'promoCodes', 'users', 'roles',
+]
+
+const pruneTombstones = (tombstones) => {
+  const ids = Object.keys(tombstones)
+  if (ids.length <= TOMBSTONES_KEPT) return tombstones
+  const keep = ids.sort((a, b) => String(tombstones[a]).localeCompare(String(tombstones[b]))).slice(-TOMBSTONES_KEPT)
+  return Object.fromEntries(keep.map((id) => [id, tombstones[id]]))
+}
+
+/**
+ * Records what a delete removed, so that a pull cannot bring it back.
+ *
+ * Sync has no tombstone table, so absence from the server is meaningless to a
+ * merge — it cannot tell a row somebody deleted from one this device created
+ * and has not sent. The union therefore treated a deleted sale as "a row the
+ * server has that we are missing" and put it straight back, which is why a
+ * deleted sale reappeared a few seconds later. Remembering the deletion locally
+ * is what closes that, and it holds whether or not the delete command has
+ * reached the server yet — which matters, because it usually has not.
+ *
+ * Works by diffing rather than by being told. A single delete can cascade
+ * (removing an exhibition takes its sales, its payments, its stock movements
+ * and its returns with it), and a list of ids passed in by hand would drift out
+ * of step with the domain logic the first time one of those rules changed.
+ */
+export function withTombstones(before, after) {
+  const at = nowIso()
+  const tombstones = { ...(after.tombstones || {}) }
+  for (const key of TOMBSTONED) {
+    const rows = after[key] || []
+    if (rows === (before[key] || [])) continue
+    const survived = new Set(rows.map((row) => row.id))
+    for (const row of before[key] || []) {
+      if (!survived.has(row.id)) tombstones[row.id] = at
+    }
+  }
+  return { ...after, tombstones: pruneTombstones(tombstones) }
+}
+
 export function pruneOutbox(outbox) {
   const synced = outbox.filter((entry) => entry.status === 'synced')
   if (synced.length <= SYNCED_KEPT) return outbox
@@ -247,6 +308,7 @@ function migrate(state) {
     promoCodes: state.promoCodes || [],
     returns: state.returns || [],
     devices: state.devices || [],
+    tombstones: state.tombstones || {},
     counters: state.counters || { invoice: 1 },
   }
 }
@@ -584,11 +646,20 @@ export function AppProvider({ children }) {
     }))
 
     if (users.length) {
-      setState((current) => ({
-        ...current,
-        users,
-        roles: roles.length ? roles : current.roles,
-      }))
+      setState((current) => {
+        // This list is a wholesale replace, so it resurrects a deleted
+        // colleague just as readily as the merge used to resurrect a deleted
+        // sale — the delete command is usually still sitting in the queue, so
+        // the server still has the row.
+        const buried = current.tombstones || {}
+        const keep = (row) => !buried[row.id]
+        const live = users.filter(keep)
+        return {
+          ...current,
+          users: live.length ? live : current.users,
+          roles: roles.length ? roles.filter(keep) : current.roles,
+        }
+      })
     }
 
     return (
@@ -905,7 +976,7 @@ export function AppProvider({ children }) {
           'product',
           productIds.join(','),
         )
-        return withOutbox(draft, 'product.delete', uid('del'), { productIds })
+        return withTombstones(current, withOutbox(draft, 'product.delete', uid('del'), { productIds }))
       })
       if (removed) {
         toast(`${removed} product${removed === 1 ? '' : 's'} deleted with their stock records`, 'warn')
@@ -928,7 +999,7 @@ export function AppProvider({ children }) {
           'customer',
           customerIds.join(','),
         )
-        return withOutbox(draft, 'customer.delete', uid('del'), { customerIds })
+        return withTombstones(current, withOutbox(draft, 'customer.delete', uid('del'), { customerIds }))
       })
       if (removed) toast(`${removed} customer${removed === 1 ? '' : 's'} deleted`, 'warn')
       return removed
@@ -1455,7 +1526,10 @@ export function AppProvider({ children }) {
             'exhibition',
             exhibitionId,
           )
-          return withOutbox(draft, 'exhibition.delete', uid('del'), { exhibitionId, returnStock, deleteSales })
+          return withTombstones(
+            current,
+            withOutbox(draft, 'exhibition.delete', uid('del'), { exhibitionId, returnStock, deleteSales }),
+          )
         })
         // The active exhibition must not point at something that no longer exists.
         if (session.exhibitionId === exhibitionId) {
@@ -1493,7 +1567,7 @@ export function AppProvider({ children }) {
             'order',
             orderIds.join(','),
           )
-          return withOutbox(next, 'order.delete', uid('del'), { orderIds, restoreStock })
+          return withTombstones(current, withOutbox(next, 'order.delete', uid('del'), { orderIds, restoreStock }))
         })
         if (removed) {
           toast(
@@ -1882,7 +1956,7 @@ export function AppProvider({ children }) {
             'user',
             userId,
           )
-          return withOutbox(draft, 'user.delete', uid('del'), { userId })
+          return withTombstones(current, withOutbox(draft, 'user.delete', uid('del'), { userId }))
         })
       },
 
@@ -1936,7 +2010,7 @@ export function AppProvider({ children }) {
             'role',
             roleId,
           )
-          return withOutbox(draft, 'role.delete', uid('rol'), { roleId, reassignTo })
+          return withTombstones(current, withOutbox(draft, 'role.delete', uid('rol'), { roleId, reassignTo }))
         })
         toast('Role deleted', 'warn')
       },
@@ -1994,7 +2068,7 @@ export function AppProvider({ children }) {
             'promo',
             promoId,
           )
-          return withOutbox(draft, 'promo.delete', uid('del'), { promoId })
+          return withTombstones(current, withOutbox(draft, 'promo.delete', uid('del'), { promoId }))
         })
         toast('Promo code deleted', 'warn')
       },
