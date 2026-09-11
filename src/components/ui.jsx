@@ -210,7 +210,20 @@ export function Toasts() {
 
 /** Online / offline + outbox indicator. */
 export function SyncPill() {
-  const { online, syncing, pendingSync } = useApp()
+  const { online, syncing, pendingSync, cloudAuth } = useApp()
+  // A lapsed cloud token looks exactly like a healthy till from here — the
+  // sale is taken, the queue is short, everything is green — right up until
+  // somebody checks the other device and finds none of it. Say it plainly.
+  if (online && cloudAuth === 'signed-out') {
+    return (
+      <span
+        className="sync-pill offline"
+        title="Sales are safe on this device. Reconnect under Activity → Sync queue to send them."
+      >
+        <span className="dot" /> Not syncing{pendingSync ? ` · ${pendingSync} queued` : ''}
+      </span>
+    )
+  }
   if (!online) {
     return (
       <span className="sync-pill offline" title="Sales are stored on this device and will sync automatically">

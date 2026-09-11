@@ -17,12 +17,15 @@ const tables = {}
 /** Every read the adapter issued, so a test can assert on columns and limits. */
 const reads = []
 
+/** Set by a test to make every write fail the way PostgREST would. */
+let writeError = null
+
 const stubClient = {
   from(table) {
     return {
       upsert(rows, options) {
         writes.push({ table, rows: Array.isArray(rows) ? rows : [rows], options })
-        return Promise.resolve({ error: null })
+        return Promise.resolve({ error: writeError })
       },
       delete() {
         return {
@@ -131,6 +134,7 @@ beforeEach(() => {
   writes.length = 0
   deletes.length = 0
   reads.length = 0
+  writeError = null
   for (const key of Object.keys(tables)) delete tables[key]
 })
 
@@ -368,6 +372,53 @@ describe('supabase adapter', () => {
     const adapter = createSupabaseAdapter({ getState: () => null })
     const result = await adapter.push({ id: 'o6', type: 'order.create', clientId: 'y', payload: {}, createdAt: '' })
     expect(result.ok).toBe(false)
+  })
+})
+
+/*
+ * A rejected token is the one failure retrying cannot fix. Left undetected it
+ * had the queue pushing the same sale every four seconds for as long as the tab
+ * stayed open, with a green "Synced" badge on screen and nothing reaching the
+ * other till.
+ */
+describe('a backend that will not say who we are', () => {
+  const authError = { code: 'PGRST301', message: 'No suitable key or wrong key type' }
+
+  it('tells an expired token apart from a refused one', async () => {
+    const { isAuthError } = await import('./supabaseAdapter.js')
+
+    expect(isAuthError(authError)).toBe(true)
+    expect(isAuthError({ message: 'JWT expired' })).toBe(true)
+    // 42501 is row-level security refusing a caller it did authenticate. That
+    // one is a permissions bug, and signing in again would not touch it.
+    expect(isAuthError({ code: '42501', message: 'new row violates row-level security policy' })).toBe(false)
+    expect(isAuthError({ code: '23505', message: 'duplicate key value' })).toBe(false)
+    expect(isAuthError(undefined)).toBe(false)
+  })
+
+  it('reports it once, and still fails the push', async () => {
+    const seen = []
+    writeError = authError
+    const adapter = createSupabaseAdapter({ getState: () => baseState(), onAuthError: (error) => seen.push(error) })
+
+    await expect(
+      adapter.push({ id: 'p9', type: 'product.save', clientId: 'p9', payload: { id: 'p9' }, createdAt: '' }),
+    ).rejects.toThrow(/No suitable key/)
+
+    // The queue still treats it as unsent — the sale is not lost, it is held.
+    expect(seen).toHaveLength(1)
+    expect(seen[0].code).toBe('PGRST301')
+  })
+
+  it('stays quiet about an ordinary write failure', async () => {
+    const seen = []
+    writeError = { code: '23505', message: 'duplicate key value violates unique constraint' }
+    const adapter = createSupabaseAdapter({ getState: () => baseState(), onAuthError: (error) => seen.push(error) })
+
+    await expect(
+      adapter.push({ id: 'p9', type: 'product.save', clientId: 'p9', payload: { id: 'p9' }, createdAt: '' }),
+    ).rejects.toThrow(/duplicate key/)
+    expect(seen).toEqual([])
   })
 })
 

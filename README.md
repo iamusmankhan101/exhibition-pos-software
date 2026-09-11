@@ -285,6 +285,28 @@ returning a short list, which reads exactly like a small table — a truncated `
 make every product past the cap look like it has no sizes, and the merge would then write that
 emptiness over a device that had them.
 
+### When the cloud session lapses
+
+A till holds two sessions that are not the same thing: the local one deciding who is standing at the
+screen, and the Supabase one signing the requests. Only the first survives a PIN sign-in — which is
+the point, since PIN sign-in has to work with no network — so a device set up once and then run on
+PINs for a week can lose the second without anything on screen changing.
+
+PostgREST answers a stale token with **401 `PGRST301`**, which is a different thing from the 403
+(`42501`) row-level security gives a caller it *did* authenticate and then refused, and different
+again from the empty result an anonymous read gets. Only the first is unfixable by retrying, and the
+outbox retried it anyway: the same sale pushed every four seconds for as long as the tab stayed
+open, a green "Synced" badge on screen, and nothing reaching the other till.
+
+So the state is tracked explicitly (`cloudAuth`: `off` / `checking` / `active` / `signed-out`) and
+both loops are gated on it. The stored session is not taken at its word — `getSession` validates a
+token's expiry locally and nothing else, and a project whose JWT secret has been rotated hands back
+one that looks healthy and is refused by every request — so a real 401 off the wire is authoritative
+and flips the state itself. The badge reads **Not syncing**, and **Activity → Sync queue** offers a
+password box that re-establishes the connection without disturbing the shift. Signing the person out
+of the till to fix this would mean abandoning whatever is on the POS at the time, for a problem that
+is entirely the backend's.
+
 ### What is not done yet
 
 **Deletions do not propagate.** A product deleted on the laptop stays on the phone until it is

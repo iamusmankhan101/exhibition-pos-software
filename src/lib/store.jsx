@@ -26,7 +26,7 @@ import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
 import { hasPendingWork, mergeCloud } from './merge.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
-import { createSupabaseAdapter, pullEverything, pushEverything } from './supabaseAdapter.js'
+import { createSupabaseAdapter, isAuthError, pullEverything, pushEverything } from './supabaseAdapter.js'
 import { DEFAULT_ROLES, userCan, wouldLoseAdminAccess } from './permissions.js'
 import {
   createCredential,
@@ -37,7 +37,7 @@ import {
   verifyPassword,
   verifyPin,
 } from './auth.js'
-import { getSupabase } from './supabase.js'
+import { getCloudSession, getSupabase, onCloudAuthChange } from './supabase.js'
 import {
   blockedBy,
   clearAttempts,
@@ -257,6 +257,15 @@ export function AppProvider({ children }) {
   const [pinRoster, setPinRoster] = useState(loadPinRoster)
   const [online, setOnline] = useState(navigator.onLine)
   const [syncing, setSyncing] = useState(false)
+  /**
+   * Whether this device can talk to the backend as somebody.
+   *
+   * `'off'` with no credentials in the build, `'checking'` until the first
+   * answer, then `'active'` or `'signed-out'`. Deliberately separate from the
+   * till's own session: PIN sign-in is offline by design and must keep working,
+   * so a dead cloud token pauses syncing rather than locking anyone out.
+   */
+  const [cloudAuth, setCloudAuth] = useState(supabaseConfigured ? 'checking' : 'off')
   const [toasts, setToasts] = useState([])
 
   // Boot finished. Effects that only need to know the app has data depend on
@@ -596,7 +605,15 @@ export function AppProvider({ children }) {
   // an unreachable backend can never stop a sale being taken.
   useEffect(() => {
     if (!supabaseConfigured) return
-    setSyncAdapter(createSupabaseAdapter({ getState: () => stateRef.current }))
+    // A 401 off the wire outranks whatever the stored session claims. A project
+    // whose JWT secret has been rotated hands back a session that looks healthy
+    // and is refused by every request, and this is the only place that shows.
+    setSyncAdapter(
+      createSupabaseAdapter({
+        getState: () => stateRef.current,
+        onAuthError: () => setCloudAuth('signed-out'),
+      }),
+    )
   }, [])
 
   useEffect(() => {
@@ -609,6 +626,61 @@ export function AppProvider({ children }) {
       window.removeEventListener('offline', goOffline)
     }
   }, [])
+
+  /**
+   * Watches the cloud session.
+   *
+   * The till holds two sessions that are not the same thing: the local one that
+   * decides who is standing at the screen, and the Supabase one that signs the
+   * requests. Only the first survives a PIN sign-in, so the second can lapse
+   * silently in the middle of a show — and every write then comes back 401,
+   * which no amount of retrying fixes. Knowing which state we are in is what
+   * lets the loops below stop and say so instead of hammering.
+   */
+  useEffect(() => {
+    if (!supabaseConfigured) return undefined
+    let stopped = false
+    let unsubscribe = null
+
+    getCloudSession()
+      .then((cloud) => {
+        if (!stopped) setCloudAuth(cloud ? 'active' : 'signed-out')
+      })
+      .catch(() => {
+        if (!stopped) setCloudAuth('signed-out')
+      })
+
+    onCloudAuthChange((cloud) => {
+      if (!stopped) setCloudAuth(cloud ? 'active' : 'signed-out')
+    }).then((off) => {
+      if (stopped) off()
+      else unsubscribe = off
+    })
+
+    return () => {
+      stopped = true
+      unsubscribe?.()
+    }
+  }, [])
+
+  // Say it once, when it lapses, to somebody who is actually signed in to the
+  // till — a background tab that has never been used does not need telling.
+  //
+  // Held back a few seconds on purpose. Restoring a session from storage is
+  // asynchronous, and the client reports "nobody" for a moment on the way, so
+  // warning on the first sight of it would greet half the reloads in the
+  // building with a scare about data not syncing. If it is still signed out
+  // when the timer fires, it is real.
+  const warnedAuth = useRef(false)
+  useEffect(() => {
+    if (cloudAuth === 'active') warnedAuth.current = false
+    if (cloudAuth !== 'signed-out' || !session.userId || warnedAuth.current) return undefined
+    const timer = setTimeout(() => {
+      warnedAuth.current = true
+      toast('This device is signed out of the cloud — sales are safe here, but need your password to sync.', 'warn')
+    }, 5000)
+    return () => clearTimeout(timer)
+  }, [cloudAuth, session.userId, toast])
 
   /**
    * Brings the rest of the shop's work down onto this device.
@@ -660,7 +732,7 @@ export function AppProvider({ children }) {
    * front, which is what someone picking the device up actually expects.
    */
   useEffect(() => {
-    if (!ready || !supabaseConfigured || !session.userId) return undefined
+    if (!ready || !supabaseConfigured || !session.userId || cloudAuth !== 'active') return undefined
     let stopped = false
     let running = false
 
@@ -669,8 +741,11 @@ export function AppProvider({ children }) {
       running = true
       try {
         await pullFromCloud()
-      } catch {
-        // Offline, mid-deploy, a dropped venue connection: the next tick retries.
+      } catch (error) {
+        // Offline, mid-deploy, a dropped venue connection: the next tick
+        // retries. A rejected token is the exception — retrying that forever is
+        // the bug, so it stops the loop and asks for a password instead.
+        if (isAuthError(error)) setCloudAuth('signed-out')
       } finally {
         running = false
       }
@@ -689,7 +764,7 @@ export function AppProvider({ children }) {
       document.removeEventListener('visibilitychange', catchUp)
       window.removeEventListener('online', catchUp)
     }
-  }, [ready, session.userId, pullFromCloud])
+  }, [ready, session.userId, cloudAuth, pullFromCloud])
 
   useEffect(() => {
     if (!state) return undefined
@@ -698,6 +773,10 @@ export function AppProvider({ children }) {
     const tick = async () => {
       const pending = stateRef.current?.outbox.filter((entry) => entry.status === 'pending') || []
       if (!pending.length || !navigator.onLine) return
+      // Without a live token every one of these comes back 401, and the queue
+      // would retry the same sale every four seconds for the length of the
+      // show. The work is safe where it is until somebody reconnects.
+      if (supabaseConfigured && cloudAuth !== 'active') return
       setSyncing(true)
       await drainOutbox(
         () => stateRef.current?.outbox || [],
@@ -727,7 +806,7 @@ export function AppProvider({ children }) {
       stopped = true
       clearInterval(interval)
     }
-  }, [state, online, setState])
+  }, [state, online, cloudAuth, setState])
 
   /* ----------------------------------------------------------- actions */
 
@@ -1900,6 +1979,45 @@ export function AppProvider({ children }) {
       /* cloud */
 
       /**
+       * Signs the device back in to the cloud without disturbing the shift.
+       *
+       * The alternative was to sign them out of the till and send them round
+       * the login screen, which means abandoning whatever is on the POS at the
+       * time. Nothing about a lapsed token justifies that: the person is
+       * already standing there, already authenticated locally, and only needs
+       * to prove it once more to the backend.
+       */
+      async reconnectCloud(password) {
+        guard()
+        if (!supabaseConfigured) {
+          throw new Error('This build has no Supabase credentials, so there is nothing to reconnect to.')
+        }
+        if (!navigator.onLine) throw new Error('You need to be online to reconnect.')
+
+        const account = stateRef.current.users.find((entry) => entry.id === session.userId)
+        if (!account?.email) throw new Error('This account has no email address to sign in with.')
+
+        const attemptKey = normaliseEmail(account.email) || 'anonymous'
+        throttleGuard('password', attemptKey)
+        const startedAt = Date.now()
+
+        const sb = await getSupabase()
+        const { error } = await sb.auth.signInWithPassword({
+          email: normaliseEmail(account.email),
+          password,
+        })
+        if (error) {
+          const message = noteFailure('password', attemptKey, account, error.message)
+          await settleFailure(startedAt)
+          throw new Error(message)
+        }
+        clearAttempts('password', attemptKey)
+        setCloudAuth('active')
+        toast('Reconnected — queued work will sync now', 'success')
+        return true
+      },
+
+      /**
        * Fetches everything this device is missing, on demand.
        *
        * The same refresh the loop runs, wired to a button for the moment
@@ -2083,6 +2201,7 @@ export function AppProvider({ children }) {
     toast,
     user,
     session.exhibitionId,
+    session.userId,
     deviceId,
     deviceCode,
     updateSession,
@@ -2104,6 +2223,7 @@ export function AppProvider({ children }) {
       sellingAtExhibition: Boolean(activeExhibition),
       online,
       syncing,
+      cloudAuth,
       deviceId,
       deviceCode,
       currentDevice,
@@ -2114,7 +2234,7 @@ export function AppProvider({ children }) {
       roles: state?.roles || DEFAULT_ROLES,
       can: (permission) => userCan(user, state?.roles, permission),
     }),
-    [state, session, user, activeExhibition, online, syncing, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
+    [state, session, user, activeExhibition, online, syncing, cloudAuth, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

@@ -5,11 +5,13 @@ import { formatDate } from '../../lib/format.js'
 import { exportCsv } from '../../lib/csv.js'
 
 export default function Activity() {
-  const { state, pendingSync, online, actions, can } = useApp()
+  const { state, pendingSync, online, cloudAuth, actions, can } = useApp()
   const [tab, setTab] = useState('audit')
   const [query, setQuery] = useState('')
   const [push, setPush] = useState(null)
   const [pull, setPull] = useState(null)
+  const [password, setPassword] = useState('')
+  const [reconnect, setReconnect] = useState(null)
 
   const logs = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -117,6 +119,52 @@ export default function Activity() {
               else's work every few seconds, so a product added on the laptop reaches the phone on its own.
             </div>
           </div>
+
+          {cloudAuth === 'signed-out' && (
+            <div className="card" style={{ padding: 14, borderColor: 'var(--danger)' }}>
+              <div style={{ fontWeight: 620, fontSize: 13.5 }}>This device is signed out of the cloud</div>
+              <div className="small muted" style={{ marginTop: 4 }}>
+                Nothing has been lost — every sale is on this device and the queue below is holding them. But the
+                backend is rejecting them until somebody signs in again, so no other till can see this one's work and
+                this one cannot see theirs. A PIN sign-in is local to this device and does not renew the connection,
+                which is why a long-running till drifts into this on its own.
+              </div>
+              <form
+                className="row wrap"
+                style={{ gap: 10, marginTop: 12, alignItems: 'center' }}
+                onSubmit={async (event) => {
+                  event.preventDefault()
+                  setReconnect({ running: true, label: 'Signing in…' })
+                  try {
+                    await actions.reconnectCloud(password)
+                    setPassword('')
+                    setReconnect(null)
+                  } catch (error) {
+                    setReconnect({ running: false, label: error.message, failed: true })
+                  }
+                }}
+              >
+                <input
+                  className="input"
+                  style={{ minWidth: 200 }}
+                  type="password"
+                  autoComplete="current-password"
+                  placeholder="Your password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                />
+                <button className="btn btn-primary" type="submit" disabled={!online || !password || reconnect?.running}>
+                  {reconnect?.running ? 'Reconnecting…' : 'Reconnect'}
+                </button>
+                {reconnect?.failed && (
+                  <span className="small" style={{ color: 'var(--danger)' }} role="alert">
+                    {reconnect.label}
+                  </span>
+                )}
+                {!online && <span className="small muted">Offline — connect first.</span>}
+              </form>
+            </div>
+          )}
 
           <div className="card" style={{ padding: 14 }}>
             <div style={{ fontWeight: 620, fontSize: 13.5 }}>Refresh from the cloud</div>

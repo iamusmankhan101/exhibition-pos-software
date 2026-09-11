@@ -237,19 +237,44 @@ const auditRow = (log) => ({
 
 /* ------------------------------------------------------------- helpers */
 
+/**
+ * Is this the backend saying "I do not know who you are"?
+ *
+ * Worth telling apart from every other failure, because it is the only one
+ * retrying cannot fix. PostgREST answers an unreadable or expired token with
+ * 401 and `PGRST301` — a different thing from the 403 (`42501`) row-level
+ * security gives a caller it *did* authenticate and then refused. Retrying the
+ * first is how a till spends an afternoon pushing the same sale every four
+ * seconds; only a fresh sign-in ends it.
+ *
+ * Checked here rather than trusted from `getSession`, which validates a stored
+ * token's expiry locally and nothing else. A project whose JWT secret has been
+ * rotated hands back a session that looks perfectly good and is refused by
+ * every request, and the wire is the only place that shows.
+ */
+export const isAuthError = (error) =>
+  error?.code === 'PGRST301' || /jwt|no suitable key/i.test(error?.message || '')
+
+/** Preserves the PostgREST code, which the message alone throws away. */
+function fail(table, error) {
+  const wrapped = new Error(`${table}: ${error.message}`)
+  wrapped.code = error.code
+  return wrapped
+}
+
 /** Throws on a real error so `drainOutbox` retries; ignores an empty write. */
 async function upsert(table, rows, onConflict) {
   const list = (Array.isArray(rows) ? rows : [rows]).filter(Boolean)
   if (!list.length) return
   const { error } = await sb.from(table).upsert(list, onConflict ? { onConflict } : undefined)
-  if (error) throw new Error(`${table}: ${error.message}`)
+  if (error) throw fail(table, error)
 }
 
 async function remove(table, column, values) {
   const list = (Array.isArray(values) ? values : [values]).filter(Boolean)
   if (!list.length) return
   const { error } = await sb.from(table).delete().in(column, list)
-  if (error) throw new Error(`${table}: ${error.message}`)
+  if (error) throw fail(table, error)
 }
 
 const inventoryCells = (state, variantIds) => {
@@ -437,60 +462,72 @@ const handlers = {
 /* -------------------------------------------------------------- adapter */
 
 /**
- * Builds the adapter. `getState` reads the current local state, which is where
- * the rows a command produced actually live.
+ * Builds the adapter.
+ *
+ * `getState` reads the current local state, which is where the rows a command
+ * produced actually live. `onAuthError` is called when the backend rejects the
+ * token rather than the write — the one failure the queue must stop retrying
+ * and hand back to a person.
  */
-export function createSupabaseAdapter({ getState }) {
+export function createSupabaseAdapter({ getState, onAuthError = () => {} }) {
   return {
     name: 'supabase',
 
     async push(entry) {
-      if (!isConfigured) return { ok: false }
-      const state = getState()
-      if (!state) return { ok: false }
-      sb = sb || (await getSupabase())
-      if (!sb) return { ok: false }
-
-      const handler = handlers[entry.type]
-      // An unknown command must not wedge the queue behind it forever.
-      if (!handler) {
-        return { ok: true, clientId: entry.clientId, syncedAt: new Date().toISOString() }
-      }
-
-      await handler(entry, state)
-
-      // The audit trail written alongside this command. PRD §19 wants who did
-      // what and when to survive off the device.
-      //
-      // Deliberately not allowed to fail the command. The sale is the thing that
-      // must reach the server; an audit row is a record *about* it. Letting this
-      // throw means one rejected log entry stops the queue draining and every
-      // later sale waits behind it — which is exactly what a missing UPDATE
-      // policy on this table used to cause.
-      const logs = (state.auditLogs || []).filter((log) => log.createdAt >= entry.createdAt)
       try {
-        await upsert('audit_logs', logs.slice(0, 20).map(auditRow))
+        return await send(entry, getState())
       } catch (error) {
-        console.warn('[sync] audit log not written:', error.message)
+        if (isAuthError(error)) onAuthError(error)
+        throw error
       }
-
-      // Append-only ledger of what has been applied. Unique on client_id, so a
-      // replay is recorded once; a conflict here means it already landed.
-      const { error } = await sb.from('sync_commands').upsert(
-        {
-          id: entry.id,
-          client_id: entry.clientId,
-          type: entry.type,
-          payload: entry.payload ?? {},
-          device_id: entry.deviceId || '',
-          created_at: entry.createdAt,
-        },
-        { onConflict: 'client_id' },
-      )
-      if (error) throw new Error(`sync_commands: ${error.message}`)
-
-      return { ok: true, clientId: entry.clientId, syncedAt: new Date().toISOString() }
     },
+  }
+
+  async function send(entry, state) {
+    if (!isConfigured) return { ok: false }
+    if (!state) return { ok: false }
+    sb = sb || (await getSupabase())
+    if (!sb) return { ok: false }
+
+    const handler = handlers[entry.type]
+    // An unknown command must not wedge the queue behind it forever.
+    if (!handler) {
+      return { ok: true, clientId: entry.clientId, syncedAt: new Date().toISOString() }
+    }
+
+    await handler(entry, state)
+
+    // The audit trail written alongside this command. PRD §19 wants who did
+    // what and when to survive off the device.
+    //
+    // Deliberately not allowed to fail the command. The sale is the thing that
+    // must reach the server; an audit row is a record *about* it. Letting this
+    // throw means one rejected log entry stops the queue draining and every
+    // later sale waits behind it — which is exactly what a missing UPDATE
+    // policy on this table used to cause.
+    const logs = (state.auditLogs || []).filter((log) => log.createdAt >= entry.createdAt)
+    try {
+      await upsert('audit_logs', logs.slice(0, 20).map(auditRow))
+    } catch (error) {
+      console.warn('[sync] audit log not written:', error.message)
+    }
+
+    // Append-only ledger of what has been applied. Unique on client_id, so a
+    // replay is recorded once; a conflict here means it already landed.
+    const { error } = await sb.from('sync_commands').upsert(
+      {
+        id: entry.id,
+        client_id: entry.clientId,
+        type: entry.type,
+        payload: entry.payload ?? {},
+        device_id: entry.deviceId || '',
+        created_at: entry.createdAt,
+      },
+      { onConflict: 'client_id' },
+    )
+    if (error) throw fail('sync_commands', error)
+
+    return { ok: true, clientId: entry.clientId, syncedAt: new Date().toISOString() }
   }
 }
 
@@ -533,7 +570,7 @@ async function readAll(table, columns, limit) {
     let request = sb.from(table).select(columns)
     if (limit) request = request.order('created_at', { ascending: false })
     const { data, error } = await request.range(rows.length, rows.length + size - 1)
-    if (error) throw new Error(`${table}: ${error.message}`)
+    if (error) throw fail(table, error)
     rows.push(...(data || []))
     // A short page is the end of the table; a full one might not be.
     if (!data || data.length < size) break
@@ -584,7 +621,7 @@ export async function pullEverything({ haveImagesFor = null, historyLimit = null
     const images = new Map()
     for (const batch of chunked(missing, IMAGE_LOOKUP_CHUNK)) {
       const { data, error } = await sb.from('products').select('id, image_url').in('id', batch)
-      if (error) throw new Error(`products: ${error.message}`)
+      if (error) throw fail('products', error)
       for (const row of data || []) images.set(row.id, row.image_url)
     }
     if (images.size) {
