@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../lib/store.jsx'
 import { EmptyState, StatCard, Tabs } from '../../components/ui.jsx'
 import { formatDate } from '../../lib/format.js'
@@ -10,6 +10,7 @@ export default function Activity() {
   const [query, setQuery] = useState('')
   const [push, setPush] = useState(null)
   const [pull, setPull] = useState(null)
+  const [storage, setStorage] = useState(null)
   const [password, setPassword] = useState('')
   const [reconnect, setReconnect] = useState(null)
 
@@ -25,6 +26,20 @@ export default function Activity() {
   }, [state.auditLogs, query])
 
   const outbox = [...state.outbox].reverse()
+
+  // How close this device is to the limit that stops it saving at all. Product
+  // images live inline in the record, so a photographed catalogue is what
+  // actually fills a phone up, and a full device fails silently: the app runs
+  // on from memory and rolls back to the last good write on the next reload.
+  useEffect(() => {
+    if (!navigator.storage?.estimate) return
+    navigator.storage
+      .estimate()
+      .then(({ usage, quota }) => setStorage({ usage: usage || 0, quota: quota || 0 }))
+      .catch(() => {})
+  }, [state.products.length, state.orders.length])
+
+  const mb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`
 
   return (
     <div className="page">
@@ -248,6 +263,23 @@ export default function Activity() {
                   </span>
                 )}
                 {!online && <span className="small muted">Offline — connect to push.</span>}
+              </div>
+            </div>
+          )}
+
+          {storage && (
+            <div className="card" style={{ padding: 14 }}>
+              <div style={{ fontWeight: 620, fontSize: 13.5 }}>Storage on this device</div>
+              <div className="small muted" style={{ marginTop: 4 }}>
+                Everything is held in one record, product photographs included, and it is rewritten whole on every
+                change. If this fills up the write starts failing and the app carries on from memory looking perfectly
+                normal — until a reload, which rolls it back to the last save that worked. A sale deleted after that
+                point simply reappears.
+              </div>
+              <div className="small" style={{ marginTop: 10 }}>
+                Using <strong>{mb(storage.usage)}</strong>
+                {storage.quota ? ` of about ${mb(storage.quota)}` : ''}
+                {storage.quota ? ` · ${Math.round((storage.usage / storage.quota) * 100)}% full` : ''}
               </div>
             </div>
           )}

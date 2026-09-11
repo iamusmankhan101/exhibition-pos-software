@@ -208,6 +208,29 @@ export function Toasts() {
   )
 }
 
+/**
+ * A standing warning that this device is not saving.
+ *
+ * Deliberately not a toast. The failure is silent and its consequence arrives
+ * much later wearing a different face — a deleted sale that is back after a
+ * reload, an edit that undid itself — so it has to keep saying so until the
+ * write succeeds, wherever in the app somebody happens to be.
+ */
+export function StorageBanner() {
+  const { storageError } = useApp()
+  if (!storageError) return null
+  return (
+    <div className="storage-banner" role="alert">
+      <strong>This device is not saving changes.</strong>{' '}
+      {storageError === 'quota'
+        ? 'Its storage is full, so nothing new is reaching the disk.'
+        : 'Writing to storage failed.'}{' '}
+      Anything done since the last successful save will come back as it was if the app is reloaded. Push to the cloud
+      before closing this tab, and free up space on the device.
+    </div>
+  )
+}
+
 /** Online / offline + outbox indicator. */
 export function SyncPill() {
   const { online, syncing, pendingSync, cloudAuth } = useApp()

@@ -840,3 +840,23 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
   cursor: default;
 }
 .icon-btn:disabled:hover { background: var(--surface); color: var(--muted); }
+
+/*
+ * Standing warning that writes to storage are failing.
+ *
+ * Sits above everything, including modals: a device that is not saving is
+ * mid-way through losing work, and no screen in the app matters more than
+ * knowing that before the tab is closed.
+ */
+.storage-banner {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 9999;
+  padding: 10px 16px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}

@@ -328,6 +328,15 @@ export function AppProvider({ children }) {
    * so a dead cloud token pauses syncing rather than locking anyone out.
    */
   const [cloudAuth, setCloudAuth] = useState(supabaseConfigured ? 'checking' : 'off')
+  /**
+   * Set when the last write to IndexedDB was refused.
+   *
+   * Latched rather than announced once, because the consequence shows up long
+   * after the cause: everything looks saved, and then a reload rolls the device
+   * back to whenever the last successful write was. A sale deleted after that
+   * point simply reappears.
+   */
+  const [storageError, setStorageError] = useState(null)
   const [toasts, setToasts] = useState([])
 
   // Boot finished. Effects that only need to know the app has data depend on
@@ -389,9 +398,18 @@ export function AppProvider({ children }) {
         // to fail: the app carries on from memory and looks fine, and the work
         // — a product image included — is gone at the next reload with nothing
         // ever having said so. Quota is the realistic cause, so say that.
-        idbSet(STATE_KEY, next).catch(() => {
-          pushToast('This device could not save to storage — free up space, changes may be lost on reload.', 'danger')
-        })
+        //
+        // A toast is not enough. It is gone in four seconds, and the symptom it
+        // produces arrives much later and looks like something else entirely:
+        // a deleted sale that is back after a reload, an edit that undid
+        // itself. So the failure is also latched into state, where a banner can
+        // keep saying it until the write succeeds.
+        idbSet(STATE_KEY, next)
+          .then(() => setStorageError(null))
+          .catch((error) => {
+            setStorageError(error?.name === 'QuotaExceededError' ? 'quota' : 'failed')
+            pushToast('This device could not save to storage — changes may come back after a reload.', 'danger')
+          })
         channelRef.current?.postMessage({ origin: deviceId, state: next })
       }, 200)
     },
@@ -2343,6 +2361,7 @@ export function AppProvider({ children }) {
       online,
       syncing,
       cloudAuth,
+      storageError,
       deviceId,
       deviceCode,
       currentDevice,
@@ -2354,7 +2373,7 @@ export function AppProvider({ children }) {
       roles: state?.roles || DEFAULT_ROLES,
       can: (permission) => userCan(user, state?.roles, permission),
     }),
-    [state, session, user, activeExhibition, online, syncing, cloudAuth, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
+    [state, session, user, activeExhibition, online, syncing, cloudAuth, storageError, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
