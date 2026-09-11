@@ -1633,7 +1633,21 @@ export function AppProvider({ children }) {
             'order',
             orderIds.join(','),
           )
-          return withTombstones(current, withOutbox(next, 'order.delete', uid('del'), { orderIds, restoreStock }))
+          // The variants the deleted sales touched, read before they go: the
+          // adapter runs later, when these orders are no longer in state, and
+          // without them it had to mirror the entire stock map to be sure of
+          // catching the cells that moved.
+          const variantIds = [
+            ...new Set(
+              current.orders
+                .filter((order) => orderIds.includes(order.id))
+                .flatMap((order) => order.items.map((item) => item.variantId)),
+            ),
+          ]
+          return withTombstones(
+            current,
+            withOutbox(next, 'order.delete', uid('del'), { orderIds, restoreStock, variantIds }),
+          )
         })
         if (removed) {
           toast(

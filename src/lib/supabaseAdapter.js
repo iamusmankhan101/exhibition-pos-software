@@ -289,9 +289,36 @@ async function remove(table, column, values) {
   if (error) throw fail(table, error)
 }
 
+/**
+ * Every variant this device actually has a product for.
+ *
+ * The server's `inventory.variant_id` is a foreign key, so a stock cell whose
+ * variant no longer exists is rejected — and rejected for the whole batch, not
+ * just that row. A single orphan left behind by an edit that dropped a size
+ * therefore blocked the command carrying it, permanently: `order.delete` came
+ * back "violates foreign key constraint inventory_variant_id_fkey" on every
+ * retry, and the sale it was deleting stayed on the server for good.
+ *
+ * An orphan is unsendable by definition — the variant is not on this device, so
+ * nothing will ever put it on the server — and a stock count for a product that
+ * no longer exists is not worth wedging a queue over. So they are dropped here,
+ * which is the difference between one stale row being ignored and the shop
+ * being unable to delete anything.
+ */
+const liveVariantIds = (state) =>
+  new Set((state.products || []).flatMap((product) => (product.variants || []).map((variant) => variant.id)))
+
+/** Stock cells safe to send: the ones asked for, minus anything orphaned. */
 const inventoryCells = (state, variantIds) => {
   const wanted = new Set(variantIds)
-  return Object.values(state.inventory || {}).filter((cell) => wanted.has(cell.variantId))
+  const live = liveVariantIds(state)
+  return Object.values(state.inventory || {}).filter((cell) => wanted.has(cell.variantId) && live.has(cell.variantId))
+}
+
+/** Every sendable cell, for the handlers that mirror the whole map. */
+const allInventoryCells = (state) => {
+  const live = liveVariantIds(state)
+  return Object.values(state.inventory || {}).filter((cell) => live.has(cell.variantId))
 }
 
 const movementsFor = (state, reference) =>
@@ -349,8 +376,18 @@ const handlers = {
   async 'order.delete'(entry, state) {
     // Payments and returns cascade from the order row.
     await remove('orders', 'id', entry.payload.orderIds)
-    // Stock may have been restored, so mirror every cell that could have moved.
-    await upsert('inventory', Object.values(state.inventory || {}).map(inventoryRow), 'location_id,variant_id')
+    // Only the stock the deleted sale actually put back. This used to mirror
+    // the entire map, which meant one sale being deleted here overwrote every
+    // variant's count on the server with this device's view of it — quietly
+    // undoing whatever another till had sold in the meantime.
+    //
+    // `variantIds` comes down in the payload because by the time this runs the
+    // orders are already gone from local state, so there is nothing left to
+    // read them off. An entry queued by an older build does not carry them, and
+    // falls back to the old behaviour rather than silently skipping the write.
+    const { variantIds } = entry.payload
+    const cells = variantIds ? inventoryCells(state, variantIds) : allInventoryCells(state)
+    await upsert('inventory', cells.map(inventoryRow), 'location_id,variant_id')
   },
 
   async 'stock.transfer'(entry, state) {
@@ -405,7 +442,7 @@ const handlers = {
     const exhibition = state.exhibitions.find((row) => row.id === entry.clientId)
     if (exhibition) await upsert('exhibitions', exhibitionRow(exhibition))
     // Closing returns unsold stock to the warehouse, so every cell may have moved.
-    await upsert('inventory', Object.values(state.inventory || {}).map(inventoryRow), 'location_id,variant_id')
+    await upsert('inventory', allInventoryCells(state).map(inventoryRow), 'location_id,variant_id')
   },
 
   async 'exhibition.delete'(entry, state) {
@@ -414,7 +451,7 @@ const handlers = {
       if (error) throw new Error(`orders: ${error.message}`)
     }
     await remove('exhibitions', 'id', entry.payload.exhibitionId)
-    await upsert('inventory', Object.values(state.inventory || {}).map(inventoryRow), 'location_id,variant_id')
+    await upsert('inventory', allInventoryCells(state).map(inventoryRow), 'location_id,variant_id')
   },
 
   async 'promo.save'(entry, state) {
@@ -973,7 +1010,7 @@ export async function pushEverything(state, onProgress = () => {}) {
     ['orders', (state.orders || []).map(orderRow)],
     ['payments', (state.payments || []).map(paymentRow)],
     ['returns', (state.returns || []).map(returnRow)],
-    ['inventory', Object.values(state.inventory || {}).map(inventoryRow), PUSH_CHUNK, 'location_id,variant_id'],
+    ['inventory', allInventoryCells(state).map(inventoryRow), PUSH_CHUNK, 'location_id,variant_id'],
     ['stock_movements', (state.movements || []).map(movementRow)],
     ['devices', (state.devices || []).map(deviceRow)],
     ['audit_logs', (state.auditLogs || []).map(auditRow)],

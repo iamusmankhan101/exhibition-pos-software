@@ -386,6 +386,73 @@ describe('supabase adapter', () => {
  * stayed open, with a green "Synced" badge on screen and nothing reaching the
  * other till.
  */
+/*
+ * `inventory.variant_id` is a foreign key, and PostgREST rejects the whole
+ * batch when one row breaks it. Deleting a sale mirrored the entire stock map,
+ * so a single cell left behind by an edit that dropped a size was enough to
+ * make every delete fail — for ever, since retrying sent the same orphan again.
+ */
+describe('stock cells with nothing behind them', () => {
+  const orphaned = () => {
+    const state = baseState()
+    state.inventory['ex1:gone'] = {
+      locationId: 'ex1',
+      variantId: 'gone',
+      quantity: 3,
+      updatedAt: '2026-03-01T10:00:00.000Z',
+    }
+    return state
+  }
+
+  it('are left out, so one stale row cannot block a delete', async () => {
+    const adapter = createSupabaseAdapter({ getState: orphaned })
+    await adapter.push({
+      id: 'd1',
+      type: 'order.delete',
+      clientId: 'd1',
+      payload: { orderIds: ['o1'], restoreStock: true },
+      createdAt: '',
+    })
+
+    const sent = rowsFor('inventory').map((row) => row.variant_id)
+    expect(sent).not.toContain('gone')
+  })
+
+  it('are left out of a full push as well', async () => {
+    // The button somebody presses when the queue is already stuck, so it above
+    // all must not fail on the same row.
+    const { pushEverything } = await import('./supabaseAdapter.js')
+    await pushEverything(orphaned())
+
+    expect(rowsFor('inventory').map((row) => row.variant_id)).not.toContain('gone')
+  })
+
+  it('does not send stock for variants the deleted sale never touched', async () => {
+    // Mirroring the whole map meant deleting one sale overwrote every count on
+    // the server with this device's view, undoing another till's sales.
+    const state = baseState()
+    state.inventory['ex1:v2'] = {
+      locationId: 'ex1',
+      variantId: 'v2',
+      quantity: 99,
+      updatedAt: '2026-03-01T10:00:00.000Z',
+    }
+    state.products[0].variants.push({ ...variant, id: 'v2', sku: 'SKU2', barcode: '2009999999999' })
+
+    const adapter = createSupabaseAdapter({ getState: () => state })
+    await adapter.push({
+      id: 'd2',
+      type: 'order.delete',
+      clientId: 'd2',
+      payload: { orderIds: ['o1'], restoreStock: true, variantIds: ['v1'] },
+      createdAt: '',
+    })
+
+    const sent = rowsFor('inventory').map((row) => row.variant_id)
+    expect(sent).toEqual(['v1'])
+  })
+})
+
 describe('deletions', () => {
   it('come back as a lookup the merge can use', async () => {
     const { pullEverything } = await import('./supabaseAdapter.js')

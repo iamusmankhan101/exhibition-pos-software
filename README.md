@@ -340,6 +340,23 @@ record, since replacing the staff list wholesale resurrects a deleted colleague 
 and carries on with every other table — a feature that is not deployed yet must not present as an
 outage — and deletes simply stay local to the device that made them.
 
+### Stock cells with nothing behind them
+
+`inventory.variant_id` is a foreign key, and PostgREST rejects the whole batch when one row breaks
+it. `order.delete` mirrored the device's entire stock map, so a single cell left behind by an edit
+that dropped a size was enough to fail every delete — permanently, because each retry sent the same
+orphan again. The queue reported `violates foreign key constraint inventory_variant_id_fkey`, the
+sale stayed on the server, and every other till kept showing it.
+
+An orphan is unsendable by definition — the variant is not on this device, so nothing will ever put
+it on the server — so `allInventoryCells` drops them rather than letting one stale row stop the shop
+deleting anything. `pushEverything` filters the same way, since it is the button people press when
+the queue is already stuck.
+
+Deleting a sale now also sends only the cells that sale actually moved, carried in the command's
+`variantIds`. Mirroring the whole map meant one delete overwrote every variant's count on the server
+with this device's view of it, quietly undoing whatever another till had sold in the meantime.
+
 ### What is not done yet
 
 Phase 1 treats the device as authoritative and Supabase as the durable copy. Before a second till
