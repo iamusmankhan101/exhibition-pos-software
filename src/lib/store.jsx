@@ -343,6 +343,16 @@ export function AppProvider({ children }) {
    * point simply reappears.
    */
   const [storageError, setStorageError] = useState(null)
+  /**
+   * How the last attempt to read from the cloud went: `{ at, error }`.
+   *
+   * The status badge used to describe the outbox and nothing else, so a pull
+   * that had been failing every twenty seconds for an hour still showed a
+   * green "Synced" — the queue was empty, after all. That is the worst way for
+   * this to fail, because the symptom people actually see is another device
+   * quietly holding different data, and nothing on screen connects the two.
+   */
+  const [lastPull, setLastPull] = useState(null)
   const [toasts, setToasts] = useState([])
 
   // Boot finished. Effects that only need to know the app has data depend on
@@ -821,6 +831,7 @@ export function AppProvider({ children }) {
       changed = result.changed
       return result.state
     })
+    setLastPull({ at: nowIso(), error: null })
 
     // Staff and roles are a wholesale replace carrying the PIN hashes, so they
     // go through the one function that reads that column — and only while the
@@ -856,6 +867,9 @@ export function AppProvider({ children }) {
         // retries. A rejected token is the exception — retrying that forever is
         // the bug, so it stops the loop and asks for a password instead.
         if (isAuthError(error)) setCloudAuth('signed-out')
+        // Recorded either way. A pull that keeps failing has to be visible
+        // somewhere, or it reads as "the other device is wrong".
+        setLastPull({ at: nowIso(), error: error?.message || 'Could not read from the cloud.' })
       } finally {
         running = false
       }
@@ -2396,6 +2410,7 @@ export function AppProvider({ children }) {
       syncing,
       cloudAuth,
       storageError,
+      lastPull,
       deviceId,
       deviceCode,
       currentDevice,
@@ -2407,7 +2422,7 @@ export function AppProvider({ children }) {
       roles: state?.roles || DEFAULT_ROLES,
       can: (permission) => userCan(user, state?.roles, permission),
     }),
-    [state, session, user, activeExhibition, online, syncing, cloudAuth, storageError, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
+    [state, session, user, activeExhibition, online, syncing, cloudAuth, storageError, lastPull, deviceId, deviceCode, currentDevice, toasts, actions, pinRoster],
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

@@ -5,7 +5,7 @@ import { formatDate } from '../../lib/format.js'
 import { exportCsv } from '../../lib/csv.js'
 
 export default function Activity() {
-  const { state, pendingSync, blockedSync, online, cloudAuth, actions, can } = useApp()
+  const { state, pendingSync, blockedSync, online, cloudAuth, lastPull, actions, can } = useApp()
   const [tab, setTab] = useState('audit')
   const [query, setQuery] = useState('')
   const [push, setPush] = useState(null)
@@ -224,6 +224,17 @@ export default function Activity() {
               )}
               {!online && <span className="small muted">Offline — connect to refresh.</span>}
             </div>
+            {lastPull && (
+              <div
+                className={lastPull.error ? 'small' : 'small muted'}
+                style={{ marginTop: 10, ...(lastPull.error ? { color: 'var(--danger)' } : {}) }}
+                role={lastPull.error ? 'alert' : undefined}
+              >
+                {lastPull.error
+                  ? `Last attempt failed at ${formatDate(lastPull.at, true)} — ${lastPull.error}`
+                  : `Last checked ${formatDate(lastPull.at, true)}.`}
+              </div>
+            )}
           </div>
 
           {can('admin.settings') && (

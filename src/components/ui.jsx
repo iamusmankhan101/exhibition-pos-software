@@ -233,7 +233,7 @@ export function StorageBanner() {
 
 /** Online / offline + outbox indicator. */
 export function SyncPill() {
-  const { online, syncing, pendingSync, cloudAuth } = useApp()
+  const { online, syncing, pendingSync, cloudAuth, lastPull } = useApp()
   // A lapsed cloud token looks exactly like a healthy till from here — the
   // sale is taken, the queue is short, everything is green — right up until
   // somebody checks the other device and finds none of it. Say it plainly.
@@ -251,6 +251,17 @@ export function SyncPill() {
     return (
       <span className="sync-pill offline" title="Sales are stored on this device and will sync automatically">
         <span className="dot" /> Offline{pendingSync ? ` · ${pendingSync} queued` : ''}
+      </span>
+    )
+  }
+  // Reading is half of syncing, and it used to be the invisible half: the queue
+  // empties, the badge goes green, and the pull has been failing every twenty
+  // seconds for an hour. What anyone actually notices is the other device
+  // holding different data, with nothing on screen connecting the two.
+  if (online && lastPull?.error) {
+    return (
+      <span className="sync-pill offline" title={`Cannot read from the cloud: ${lastPull.error}`}>
+        <span className="dot" /> Not syncing
       </span>
     )
   }
