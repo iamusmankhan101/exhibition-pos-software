@@ -255,10 +255,22 @@ const auditRow = (log) => ({
 export const isAuthError = (error) =>
   error?.code === 'PGRST301' || /jwt|no suitable key/i.test(error?.message || '')
 
-/** Preserves the PostgREST code, which the message alone throws away. */
+/**
+ * Preserves the PostgREST code, which the message alone throws away, and says
+ * whether this entry could ever succeed by being sent again.
+ *
+ * The distinction decides whether one bad row stops the shop syncing. A dropped
+ * connection or a lapsed token affects every entry equally, so the queue should
+ * stop and try the lot again shortly. A row the database *understood and
+ * refused* — a foreign key with nothing behind it, a column the deployed schema
+ * does not have — will be refused identically forever, and the entries queued
+ * behind it are usually fine. Postgres and PostgREST both answer with a code;
+ * a network failure has none. That is the test.
+ */
 function fail(table, error) {
   const wrapped = new Error(`${table}: ${error.message}`)
   wrapped.code = error.code
+  wrapped.permanent = Boolean(error.code) && !isAuthError(error)
   return wrapped
 }
 

@@ -38,8 +38,16 @@ const HISTORY = ['orders', 'payments', 'returns', 'movements', 'auditLogs']
 /** Mutable, and with no per-row version to compare, so the server wins. */
 const CATALOGUE = ['products', 'customers', 'exhibitions', 'promoCodes', 'devices']
 
+/**
+ * Is there anything on this device the server has not got?
+ *
+ * `blocked` counts. An entry the server refused is every bit as unsent as one
+ * still waiting its turn, and it is the local record that is ahead — so letting
+ * a pull overwrite the catalogue while one is outstanding would quietly undo
+ * the change somebody made.
+ */
 export const hasPendingWork = (state) =>
-  (state?.outbox || []).some((entry) => entry.status === 'pending')
+  (state?.outbox || []).some((entry) => entry.status === 'pending' || entry.status === 'blocked')
 
 /**
  * Deep equality, used only to decide whether the merge changed anything.

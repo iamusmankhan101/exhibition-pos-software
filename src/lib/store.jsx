@@ -204,7 +204,7 @@ export function pruneOutbox(outbox) {
 export const isEmptyDevice = (state) =>
   !state.products.length &&
   !state.orders.length &&
-  !(state.outbox || []).some((entry) => entry.status === 'pending')
+  !(state.outbox || []).some((entry) => entry.status === 'pending' || entry.status === 'blocked')
 
 /**
  * The catalogue from a pull, with the parts this device already owns removed.
@@ -732,7 +732,7 @@ export function AppProvider({ children }) {
    * front, which is what someone picking the device up actually expects.
    */
   useEffect(() => {
-    if (!ready || !supabaseConfigured || !session.userId || cloudAuth !== 'active') return undefined
+    if (!ready || !supabaseConfigured || !session.userId || cloudAuth === 'signed-out') return undefined
     let stopped = false
     let running = false
 
@@ -776,23 +776,46 @@ export function AppProvider({ children }) {
       // Without a live token every one of these comes back 401, and the queue
       // would retry the same sale every four seconds for the length of the
       // show. The work is safe where it is until somebody reconnects.
-      if (supabaseConfigured && cloudAuth !== 'active') return
+      //
+      // Only a *known* bad session stops it. Waiting for `'checking'` to become
+      // an answer would mean a session lookup that never resolves silently
+      // halts syncing, which is the same outage wearing a different hat.
+      if (supabaseConfigured && cloudAuth === 'signed-out') return
       setSyncing(true)
       await drainOutbox(
         () => stateRef.current?.outbox || [],
-        (synced, failed) => {
+        (synced, failed, blocked) => {
           if (stopped) return
           const syncedIds = new Map(synced.map((entry) => [entry.id, entry.syncedAt]))
+          const failedIds = new Map(failed.map((entry) => [entry.id, entry.reason]))
+          const blockedIds = new Map(blocked.map((entry) => [entry.id, entry.reason]))
           setState((current) => ({
             ...current,
             outbox: pruneOutbox(
-              current.outbox.map((entry) =>
-                syncedIds.has(entry.id)
-                  ? { ...entry, status: 'synced', syncedAt: syncedIds.get(entry.id) }
-                  : failed.includes(entry.id)
-                    ? { ...entry, status: 'pending', attempts: (entry.attempts || 0) + 1 }
-                    : entry,
-              ),
+              current.outbox.map((entry) => {
+                if (syncedIds.has(entry.id)) {
+                  return { ...entry, status: 'synced', syncedAt: syncedIds.get(entry.id), lastError: '' }
+                }
+                // Set aside, not lost: the payload stays, and so does the
+                // reason, which is the only thing that makes it fixable.
+                if (blockedIds.has(entry.id)) {
+                  return {
+                    ...entry,
+                    status: 'blocked',
+                    attempts: (entry.attempts || 0) + 1,
+                    lastError: blockedIds.get(entry.id),
+                  }
+                }
+                if (failedIds.has(entry.id)) {
+                  return {
+                    ...entry,
+                    status: 'pending',
+                    attempts: (entry.attempts || 0) + 1,
+                    lastError: failedIds.get(entry.id),
+                  }
+                }
+                return entry
+              }),
             ),
           }))
         },
@@ -1979,6 +2002,28 @@ export function AppProvider({ children }) {
       /* cloud */
 
       /**
+       * Puts entries the server refused back in the queue.
+       *
+       * Their reasons are usually one fix away — a missing policy, a schema
+       * that had not been migrated, a record whose parent had not landed yet —
+       * and after that they go up like anything else. The payloads were never
+       * thrown away precisely so this could work.
+       */
+      retryBlocked() {
+        let count = 0
+        setState((current) => {
+          const outbox = current.outbox.map((entry) => {
+            if (entry.status !== 'blocked') return entry
+            count += 1
+            return { ...entry, status: 'pending', lastError: '' }
+          })
+          return count ? { ...current, outbox } : current
+        })
+        if (count) toast(`${count} queued change(s) will be tried again`, 'info')
+        return count
+      },
+
+      /**
        * Signs the device back in to the cloud without disturbing the shift.
        *
        * The alternative was to sign them out of the till and send them round
@@ -2228,6 +2273,7 @@ export function AppProvider({ children }) {
       deviceCode,
       currentDevice,
       pendingSync: state?.outbox.filter((entry) => entry.status === 'pending').length || 0,
+      blockedSync: state?.outbox.filter((entry) => entry.status === 'blocked').length || 0,
       toasts,
       actions,
       pinRoster,

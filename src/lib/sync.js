@@ -41,8 +41,22 @@ function emit(event) {
 let draining = false
 
 /**
- * Drains pending outbox entries. `commit` receives the ids that synced
- * successfully so the store can mark them off in a single state update.
+ * Drains pending outbox entries.
+ *
+ * `commit` is handed three lists: what synced, what failed and should be tried
+ * again, and what the server refused outright.
+ *
+ * That third list is the point. This used to stop at the first failure of any
+ * kind and retry the whole queue on the next tick, which is right for a dropped
+ * connection and catastrophic for a row the database will never accept: the bad
+ * entry sat at the head of the queue being re-sent every few seconds, every
+ * sale behind it waited forever, and the screen said "pending" without ever
+ * saying why. One unlucky record stopped the shop syncing.
+ *
+ * So a refusal the adapter marks `permanent` takes that entry out of the way
+ * and the rest of the queue carries on. Nothing is deleted — a set-aside entry
+ * keeps its payload and its reason, and can be put back in the queue once
+ * whatever the server objected to is fixed.
  */
 export async function drainOutbox(getOutbox, commit) {
   if (draining || !navigator.onLine) return
@@ -53,21 +67,30 @@ export async function drainOutbox(getOutbox, commit) {
   emit({ type: 'sync:start', count: pending.length })
   const synced = []
   const failed = []
+  const blocked = []
 
   try {
     for (const entry of pending) {
       try {
         const result = await adapter.push(entry)
         if (result.ok) synced.push({ id: entry.id, syncedAt: result.syncedAt })
-        else failed.push(entry.id)
-      } catch {
-        failed.push(entry.id)
-        break // Stop on the first transport failure and retry on the next tick.
+        else failed.push({ id: entry.id, reason: '' })
+      } catch (error) {
+        const reason = error?.message || 'Unknown error'
+        if (error?.permanent) {
+          // This one and only this one. Step over it and keep going.
+          blocked.push({ id: entry.id, reason })
+          continue
+        }
+        // Offline, a 5xx, a lapsed token: everything in the queue is in the
+        // same boat, so stop and try the lot again on the next tick.
+        failed.push({ id: entry.id, reason })
+        break
       }
     }
   } finally {
     draining = false
-    if (synced.length || failed.length) commit(synced, failed)
-    emit({ type: 'sync:done', synced: synced.length, failed: failed.length })
+    if (synced.length || failed.length || blocked.length) commit(synced, failed, blocked)
+    emit({ type: 'sync:done', synced: synced.length, failed: failed.length, blocked: blocked.length })
   }
 }

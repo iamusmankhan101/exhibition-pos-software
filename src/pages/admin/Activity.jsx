@@ -5,7 +5,7 @@ import { formatDate } from '../../lib/format.js'
 import { exportCsv } from '../../lib/csv.js'
 
 export default function Activity() {
-  const { state, pendingSync, online, cloudAuth, actions, can } = useApp()
+  const { state, pendingSync, blockedSync, online, cloudAuth, actions, can } = useApp()
   const [tab, setTab] = useState('audit')
   const [query, setQuery] = useState('')
   const [push, setPush] = useState(null)
@@ -31,7 +31,13 @@ export default function Activity() {
       <div className="grid grid-4">
         <StatCard label="Audit entries" value={state.auditLogs.length} accent />
         <StatCard label="Notifications" value={state.notifications.length} />
-        <StatCard label="Queued for sync" value={pendingSync} meta={online ? 'Online' : 'Offline — will retry'} />
+        <StatCard
+          label="Queued for sync"
+          value={pendingSync}
+          // A set-aside entry is still unsent work, so it must not simply
+          // disappear from the count that people glance at.
+          meta={blockedSync ? `${blockedSync} refused` : online ? 'Online' : 'Offline — will retry'}
+        />
         <StatCard label="Synced records" value={state.outbox.filter((entry) => entry.status === 'synced').length} />
       </div>
 
@@ -246,6 +252,22 @@ export default function Activity() {
             </div>
           )}
 
+          {blockedSync > 0 && (
+            <div className="card" style={{ padding: 14, borderColor: 'var(--danger)' }}>
+              <div style={{ fontWeight: 620, fontSize: 13.5 }}>
+                {blockedSync} change{blockedSync === 1 ? '' : 's'} the server refused
+              </div>
+              <div className="small muted" style={{ marginTop: 4 }}>
+                These are set aside rather than retried, so one record the database will not accept cannot stop
+                everything behind it syncing. Nothing has been thrown away — the reason is on each row below. Fix what
+                it names, then put them back in the queue.
+              </div>
+              <button className="btn" style={{ marginTop: 12 }} onClick={() => actions.retryBlocked()}>
+                Try these again
+              </button>
+            </div>
+          )}
+
           {outbox.length === 0 ? (
             <EmptyState title="Queue is empty">Nothing waiting to sync.</EmptyState>
           ) : (
@@ -258,6 +280,7 @@ export default function Activity() {
                     <th>Idempotency key</th>
                     <th>Status</th>
                     <th>Synced</th>
+                    <th>Last error</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -267,11 +290,23 @@ export default function Activity() {
                       <td className="small mono">{entry.type}</td>
                       <td className="small mono muted">{entry.clientId}</td>
                       <td>
-                        <span className={`badge ${entry.status === 'synced' ? 'badge-good' : 'badge-warn'}`}>
+                        <span
+                          className={`badge ${
+                            entry.status === 'synced'
+                              ? 'badge-good'
+                              : entry.status === 'blocked'
+                                ? 'badge-danger'
+                                : 'badge-warn'
+                          }`}
+                        >
                           {entry.status}
                         </span>
                       </td>
                       <td className="small muted">{entry.syncedAt ? formatDate(entry.syncedAt, true) : '—'}</td>
+                      <td className="small muted" style={{ maxWidth: 320 }}>
+                        {entry.lastError || '—'}
+                        {entry.attempts > 1 ? ` · ${entry.attempts} attempts` : ''}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
