@@ -386,6 +386,17 @@ begin
   end loop;
 end $$;
 
+-- Your own staff row, active or not. Policies are OR'd, so this widens the read
+-- above by exactly one row.
+--
+-- Without it an account awaiting approval cannot read the record that says so:
+-- is_active_staff() needs an active row, the table comes back empty, and the
+-- app reports that no staff record is linked to the address at all. It also
+-- left the app's own "awaiting approval" message unreachable, because RLS
+-- removed the row before that check could run.
+drop policy if exists staff_read_self on staff;
+create policy staff_read_self on staff for select using (auth_id = auth.uid());
+
 -- Write: selling is the common case, so anyone with `pos` may create sales and
 -- move stock. Everything else is gated on the matching admin permission.
 create policy orders_write          on orders          for insert with check (has_permission('pos'));
