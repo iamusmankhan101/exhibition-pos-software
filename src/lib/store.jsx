@@ -23,7 +23,7 @@ import {
   transferStock,
 } from './domain.js'
 import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
-import { hasPendingWork, mergeCloud } from './merge.js'
+import { hasUnsentIdentity, mergeCloud } from './merge.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
 import {
@@ -834,10 +834,15 @@ export function AppProvider({ children }) {
     setLastPull({ at: nowIso(), error: null })
 
     // Staff and roles are a wholesale replace carrying the PIN hashes, so they
-    // go through the one function that reads that column — and only while the
-    // queue is empty, because a replace would drop an account created here and
-    // not yet sent.
-    if (!hasPendingWork(stateRef.current)) {
+    // go through the one function that reads that column — and only while this
+    // device has no unsent account of its own, because a replace would drop one
+    // created here and not yet sent.
+    //
+    // Only the staff and role commands can do that, so only those hold it up. A
+    // refused sale used to be enough to stop this device ever seeing a new
+    // colleague again, because a `blocked` entry never leaves the queue on its
+    // own — the same trap the catalogue merge had.
+    if (!hasUnsentIdentity(stateRef.current)) {
       await refreshIdentity(null).catch(() => {})
     }
     return changed

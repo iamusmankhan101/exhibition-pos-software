@@ -17,10 +17,11 @@
  *    a row on this device the server has not got is kept, because that is a sale
  *    still sitting in the queue.
  *  - The catalogue (products, customers, exhibitions, promos, devices) is
- *    mutable and carries no per-row version, so the server wins — but only
- *    while the outbox is empty. With anything pending, this device's copy is by
- *    definition newer than the server's, so the catalogue is left alone until
- *    the queue drains, which normally takes a few seconds.
+ *    mutable and carries no per-row version, so the server wins — except for
+ *    the rows a queued command is still holding newer data for, which are named
+ *    by `unsentCatalogue` and left alone until it drains. Row by row rather
+ *    than wholesale: a queue that cannot drain must not mean a device never
+ *    sees another till's products again.
  *  - Inventory is a running balance rather than a record, and both sides stamp
  *    `updatedAt` whenever they move one, so the newer stamp wins cell by cell.
  *
@@ -48,6 +49,91 @@ const CATALOGUE = ['products', 'customers', 'exhibitions', 'promoCodes', 'device
  */
 export const hasPendingWork = (state) =>
   (state?.outbox || []).some((entry) => entry.status === 'pending' || entry.status === 'blocked')
+
+/** Still waiting to reach the server, whether it is queued or was refused. */
+const unsent = (entry) => entry?.status === 'pending' || entry?.status === 'blocked'
+
+/**
+ * Which catalogue rows a queued command is holding newer data for.
+ *
+ * The whole catalogue used to stand still whenever the outbox had anything in
+ * it, which is right for the few seconds a queue normally takes to drain and
+ * wrong for ever afterwards. A `blocked` entry is unsent by definition and is
+ * only ever cleared by somebody pressing retry on the Activity screen — so one
+ * refused change meant this device never saw another product, customer,
+ * exhibition or promo from any other till again. Sales still arrived, which is
+ * what made it look like the catalogue alone had stopped.
+ *
+ * Only the rows a queued command actually names need protecting, so that is
+ * what is protected. Everything else is free to come down.
+ *
+ * The delete commands are here for completeness rather than need: a delete also
+ * writes a tombstone, and `buried` already outranks anything the server says.
+ */
+const CATALOGUE_IDS = {
+  'product.save': (entry) => [entry.payload?.id],
+  'product.delete': (entry) => entry.payload?.productIds,
+  'customer.save': (entry) => [entry.payload?.id],
+  'customer.delete': (entry) => entry.payload?.customerIds,
+  'exhibition.save': (entry) => [entry.payload?.id],
+  'exhibition.close': (entry) => [entry.clientId],
+  'exhibition.delete': (entry) => [entry.payload?.exhibitionId],
+  'promo.save': (entry) => [entry.payload?.id],
+  'promo.delete': (entry) => [entry.payload?.promoId],
+}
+
+/**
+ * Commands that are known not to carry catalogue data.
+ *
+ * Listed rather than assumed. A command this file has never heard of might be
+ * holding a product edit, and letting the server win over it would be the one
+ * thing the merge must never do — so an unrecognised type falls back to holding
+ * the whole catalogue still, exactly as before. Adding a command without
+ * touching this list is therefore safe; it only costs the narrower behaviour.
+ */
+const NON_CATALOGUE = new Set([
+  'order.create', 'order.settle', 'order.refund', 'order.delete',
+  'stock.transfer', 'stock.adjust',
+  'user.signup', 'user.save', 'user.delete', 'role.save', 'role.delete',
+  'settings.save',
+])
+
+/** Ids whose local copy must survive the pull, or `null` to hold everything. */
+function unsentCatalogue(state) {
+  const ids = new Set()
+  for (const entry of state?.outbox || []) {
+    if (!unsent(entry)) continue
+    const read = CATALOGUE_IDS[entry.type]
+    if (read) {
+      for (const id of read(entry) || []) if (id) ids.add(id)
+      continue
+    }
+    // Not a command we can place. Assume the worst and hold the lot.
+    if (!NON_CATALOGUE.has(entry.type)) return null
+  }
+  return ids
+}
+
+/**
+ * Settings carry no id, so they are all or nothing: a queued `settings.save`
+ * means this device holds the newer copy of every field in the row.
+ */
+const hasUnsentSettings = (state) =>
+  (state?.outbox || []).some((entry) => unsent(entry) && entry.type === 'settings.save')
+
+/** Commands that write the staff or roles tables. */
+const IDENTITY = new Set(['user.signup', 'user.save', 'user.delete', 'role.save', 'role.delete'])
+
+/**
+ * Is there an account or role here the server has not got?
+ *
+ * `refreshIdentity` replaces the staff list wholesale, so it has to wait for
+ * these — and only for these. Anything else in the queue is irrelevant to it,
+ * and treating it otherwise meant one refused sale stopped a device ever
+ * learning about a new colleague.
+ */
+export const hasUnsentIdentity = (state) =>
+  (state?.outbox || []).some((entry) => unsent(entry) && IDENTITY.has(entry.type))
 
 /**
  * Deep equality, used only to decide whether the merge changed anything.
@@ -103,13 +189,17 @@ const byNewest = (a, b) => String(b?.createdAt || '').localeCompare(String(a?.cr
  * with no `createdAt` at all, so sorting them would shuffle the products list
  * under the user for no gain.
  */
-function unionById(local, server, { preferServer, sorted, buried }) {
+function unionById(local, server, { preferServer, sorted, buried, keepLocal = null }) {
   const mine = new Map(local.map((row) => [row?.id, row]))
   const fromServer = new Map()
   for (const row of server) {
     if (!row || fromServer.has(row.id) || buried.has(row.id)) continue
     const held = mine.get(row.id)
-    fromServer.set(row.id, !held ? row : preferServer ? { ...held, ...row } : held)
+    // `keepLocal` names the rows a queued command is holding newer data for.
+    // A row the server has and this device does not is still welcome — being
+    // behind on one product says nothing about the rest of the catalogue.
+    const take = preferServer && !keepLocal?.has(row.id)
+    fromServer.set(row.id, !held ? row : take ? { ...held, ...row } : held)
   }
 
   // Local order first, so a list on screen stays where it was, then whatever
@@ -183,13 +273,19 @@ export function mergeCloud(local, pulled) {
     take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: !pending, sorted: true, buried }))
   }
 
-  if (!pending) {
+  // `null` means there is queued work this file cannot place, so the whole
+  // catalogue stands still. A set — usually an empty one — means only the rows
+  // it names are held back and everything else may land.
+  const keepLocal = unsentCatalogue(local)
+  if (keepLocal) {
     for (const key of CATALOGUE) {
-      take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: true, sorted: false, buried }))
+      take(key, unionById(local[key] || [], pulled[key] || [], { preferServer: true, sorted: false, buried, keepLocal }))
     }
     // Absent rather than undefined when the server has never written a settings
     // row — spreading that over the state would blank the local defaults.
-    if (pulled.settings) take('settings', { ...local.settings, ...pulled.settings })
+    if (pulled.settings && !hasUnsentSettings(local)) {
+      take('settings', { ...local.settings, ...pulled.settings })
+    }
   }
 
   take('inventory', mergeInventory(local.inventory || {}, pulled.inventory || {}))

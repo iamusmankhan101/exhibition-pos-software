@@ -98,13 +98,80 @@ describe('the catalogue', () => {
     expect(state.products[0].image).toBe('data:image/jpeg;base64,xx')
   })
 
-  it('leaves the catalogue alone while the queue has work in it', () => {
+  it('leaves the catalogue alone while the queue has work it cannot place', () => {
     const mine = { id: 'p1', name: 'Renamed here', variants: [] }
     const { state } = mergeCloud(
       local({ products: [mine], outbox: pending }),
       { products: [{ id: 'p1', name: 'Stale', variants: [] }] },
     )
     expect(state.products).toEqual([mine])
+  })
+
+  it('holds back only the product the queue is actually carrying', () => {
+    // The edit made here and not yet sent must survive. Every other product on
+    // the server is unrelated to it and has no reason to wait.
+    const mine = { id: 'p1', name: 'Renamed here', variants: [] }
+    const { state } = mergeCloud(
+      local({
+        products: [mine],
+        outbox: [{ id: 'obx1', status: 'pending', type: 'product.save', payload: { id: 'p1' } }],
+      }),
+      {
+        products: [
+          { id: 'p1', name: 'Stale', variants: [] },
+          { id: 'p2', name: 'Bag from the laptop', variants: [] },
+        ],
+      },
+    )
+
+    expect(state.products.find((product) => product.id === 'p1').name).toBe('Renamed here')
+    expect(state.products.find((product) => product.id === 'p2').name).toBe('Bag from the laptop')
+  })
+
+  /*
+   * The one that took a shop off the air. A `blocked` entry is unsent, so it
+   * counted as pending work — and unlike a pending one it never leaves the
+   * queue by itself, because only somebody pressing retry clears it. The whole
+   * catalogue therefore stood still for good: sales kept arriving from the
+   * other tills, and not one product, customer or exhibition ever did again.
+   */
+  it('still takes another till’s new products with a refused entry stuck in the queue', () => {
+    const { state } = mergeCloud(
+      local({
+        products: [{ id: 'p1', name: 'Scarf', variants: [] }],
+        outbox: [{ id: 'obx1', status: 'blocked', type: 'order.create', payload: { id: 'o1' } }],
+      }),
+      {
+        products: [
+          { id: 'p1', name: 'Scarf', variants: [] },
+          { id: 'p2', name: 'Belt', variants: [] },
+        ],
+      },
+    )
+
+    expect(state.products.map((product) => product.id)).toEqual(['p1', 'p2'])
+  })
+
+  it('holds the whole catalogue for a command it has never heard of', () => {
+    // Forward safety: an unrecognised command might be carrying a product edit,
+    // and letting the server win over one is the single thing this must not do.
+    const mine = { id: 'p1', name: 'Renamed here', variants: [] }
+    const { state } = mergeCloud(
+      local({ products: [mine], outbox: [{ id: 'obx1', status: 'pending', type: 'future.command' }] }),
+      { products: [{ id: 'p1', name: 'Stale', variants: [] }, { id: 'p2', name: 'Belt', variants: [] }] },
+    )
+    expect(state.products).toEqual([mine])
+  })
+
+  it('does not take the server’s settings while a settings save is queued', () => {
+    const { state } = mergeCloud(
+      local({
+        settings: { currencySymbol: 'AED' },
+        outbox: [{ id: 'obx1', status: 'blocked', type: 'settings.save', payload: {} }],
+      }),
+      { settings: { currencySymbol: '£' } },
+    )
+    expect(state.settings.currencySymbol).toBe('AED')
   })
 
   it('leaves the products list where the user last saw it', () => {
