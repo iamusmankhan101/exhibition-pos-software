@@ -26,7 +26,17 @@ let readError = null
 /** Set by a test to make every delete fail the way PostgREST would. */
 let deleteError = null
 
+/** Set by a test: what `rpc` hands back. */
+let rpcResult = { data: null, error: null }
+
+/** Every rpc call the adapter made. */
+const rpcCalls = []
+
 const stubClient = {
+  rpc(name, args) {
+    rpcCalls.push({ name, args })
+    return Promise.resolve(rpcResult)
+  },
   from(table) {
     return {
       upsert(rows, options) {
@@ -144,6 +154,8 @@ beforeEach(() => {
   writeError = null
   readError = null
   deleteError = null
+  rpcCalls.length = 0
+  rpcResult = { data: null, error: null }
   for (const key of Object.keys(tables)) delete tables[key]
 })
 
@@ -823,5 +835,55 @@ describe('pushEverything', () => {
 
     await pushEverything(state)
     expect(writes.some((write) => write.table === 'orders')).toBe(false)
+  })
+})
+
+/*
+ * Claiming a system nobody owns. The judgement lives in the database function,
+ * which refuses once anybody can administer the project — so what matters here
+ * is that a refusal is carried back as an answer rather than raised as a fault.
+ * Confusing the two would turn "somebody already owns this" into "the backend
+ * is broken", which sends the reader looking in entirely the wrong place.
+ */
+describe('claiming a system with no administrator', () => {
+  it('hands back the row it created', async () => {
+    const { claimAdmin } = await import('./supabaseAdapter.js')
+    rpcResult = { data: { id: 'usr_1', email: 'owner@shop.com', role: 'admin', active: true }, error: null }
+
+    const result = await claimAdmin()
+
+    expect(rpcCalls).toEqual([{ name: 'claim_admin', args: undefined }])
+    expect(result.claimed).toBe(true)
+    expect(result.account.role).toBe('admin')
+  })
+
+  it('unwraps a single row returned as a list', async () => {
+    const { claimAdmin } = await import('./supabaseAdapter.js')
+    rpcResult = { data: [{ id: 'usr_1', role: 'admin' }], error: null }
+
+    expect((await claimAdmin()).account.id).toBe('usr_1')
+  })
+
+  it('reports a refusal as an answer, not a failure', async () => {
+    const { claimAdmin } = await import('./supabaseAdapter.js')
+    rpcResult = {
+      data: null,
+      error: { code: 'P0001', message: 'This system already has an administrator. Ask them to approve your account.' },
+    }
+
+    const result = await claimAdmin()
+
+    expect(result.claimed).toBe(false)
+    expect(result.reason).toMatch(/already has an administrator/)
+  })
+
+  it('still throws when the function is not deployed', async () => {
+    // A project that has not had the script run says the function is missing,
+    // and that is a real fault — telling somebody to ask an admin who does not
+    // exist would send them round the loop this whole thing exists to break.
+    const { claimAdmin } = await import('./supabaseAdapter.js')
+    rpcResult = { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.claim_admin' } }
+
+    await expect(claimAdmin()).rejects.toThrow(/claim_admin/)
   })
 })

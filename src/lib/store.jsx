@@ -27,6 +27,7 @@ import { hasUnsentIdentity, mergeCloud } from './merge.js'
 import { drainOutbox, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
 import {
+  claimAdmin,
   createSupabaseAdapter,
   isAuthError,
   pullEverything,
@@ -1179,11 +1180,17 @@ export function AppProvider({ children }) {
             // are not linked", because the first is a seeding step and the
             // second is usually an auth id that does not match.
             const empty = !stateRef.current.users.some((entry) => entry.authId)
-            throw new Error(
+            const problem = new Error(
               empty
-                ? 'No staff records exist yet. Run supabase/seed.sql to create the first account.'
+                ? 'No staff record is linked to this sign-in yet.'
                 : `No staff record is linked to ${data.user.email}. An admin needs to finish setting it up.`,
             )
+            // Authentication worked; it is only the staff link that is missing.
+            // On a project nobody owns yet that is the expected state rather
+            // than a fault, so the form is told it may offer to claim it. The
+            // database decides whether the offer is real — see `claimAdmin`.
+            problem.canClaim = true
+            throw problem
           }
           if (!account.active) {
             throw new Error('This account is awaiting approval or has been deactivated.')
@@ -1213,6 +1220,50 @@ export function AppProvider({ children }) {
         }
         if (!account.active) throw new Error('This account is awaiting approval or has been deactivated.')
         clearAttempts('password', attemptKey)
+        return api.startSession(account, 'Password')
+      },
+
+      /**
+       * Takes ownership of a project that has no administrator yet.
+       *
+       * Offered by the login form when a correct password got through Supabase
+       * and found no staff record behind it. On a project nobody owns that is
+       * not a fault — it is the first sign-in — and this is what the SQL editor
+       * used to be needed for.
+       *
+       * The decision is the database's, not this one's: `claim_admin` refuses
+       * the moment anybody can administer the project, so on any system with an
+       * owner this turns into the ordinary "ask an admin to approve you".
+       *
+       * The Supabase session is already live at this point — authentication
+       * succeeded, it was only the staff lookup that came back empty — so there
+       * is no password to ask for a second time.
+       */
+      async claimAdmin() {
+        guard()
+        if (!supabaseConfigured) throw new Error('Supabase is not configured.')
+
+        const sb = await getSupabase()
+        const { data } = await sb.auth.getUser()
+        const authUser = data?.user
+        if (!authUser) {
+          throw new Error('That sign-in has expired. Enter your email and password again.')
+        }
+
+        const result = await claimAdmin()
+        if (!result.claimed) throw new Error(result.reason)
+
+        // Read the staff table back rather than trusting the row just returned:
+        // this is the call that puts the roles and the rest of the team on the
+        // device, and it is the same path an ordinary sign-in takes.
+        const account = await api.refreshIdentity(authUser)
+        if (!account) {
+          throw new Error('The account was created, but could not be read back. Try signing in again.')
+        }
+        await api.adoptCatalogue().catch((error) => {
+          toast(`Signed in, but the catalogue did not load: ${error.message}`, 'danger')
+        })
+        toast('This system is now yours. You can add the rest of the team from Staff.', 'success')
         return api.startSession(account, 'Password')
       },
 

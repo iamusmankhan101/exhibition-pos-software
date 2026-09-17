@@ -511,6 +511,85 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_auth_user();
 
+/* ------------------------------------------- claiming a new system */
+
+-- The first administrator, without the SQL editor. RLS grants staff management
+-- through an active staff row and creating one needs that same grant, so the
+-- very first admin could not be made from inside the app at all.
+--
+-- Self-limiting: the moment anybody can administer this project it refuses, so
+-- it is a bootstrap rather than a back door. See supabase/add-admin-claim.sql
+-- for the full reasoning.
+
+create or replace function claim_admin() returns staff as $$
+declare
+  caller auth.users%rowtype;
+  claimed staff%rowtype;
+begin
+  -- Only a signed-in caller. An anonymous one has no row to promote, and
+  -- auth.uid() is the only identity here that the client cannot choose.
+  if auth.uid() is null then
+    raise exception 'You need to be signed in to claim this system.'
+      using errcode = 'P0001';
+  end if;
+
+  -- The gate. Anybody who can already administer the project owns it, so there
+  -- is nothing to claim and this refuses for the rest of the project's life.
+  -- Tested on the permission rather than the role id, because roles are
+  -- editable and it is `admin.settings` that actually grants staff management.
+  if exists (
+    select 1
+    from staff s
+    join roles r on r.id = s.role
+    where s.active
+      and ('*' = any (r.permissions) or 'admin.settings' = any (r.permissions))
+  ) then
+    raise exception 'This system already has an administrator. Ask them to approve your account.'
+      using errcode = 'P0001';
+  end if;
+
+  select * into caller from auth.users where id = auth.uid();
+
+  -- The role has to exist before a staff row can point at it. Seeded by
+  -- schema.sql, but a project that has only ever had this script run needs it.
+  insert into roles (id, name, description, system, permissions, max_discount_percent)
+  values ('admin', 'Admin', 'Full control, including settings, roles and permanent deletion.', true, '{*}', 100)
+  on conflict (id) do nothing;
+
+  -- Their row if the trigger made one, otherwise a new one. Matched on auth_id
+  -- first and email second, which is the same order the app resolves an
+  -- identity in — a row made on a till carries no auth_id to match on.
+  update staff
+  set role = 'admin', active = true, max_discount_percent = 100, auth_id = caller.id
+  where auth_id = caller.id or lower(email) = lower(caller.email)
+  returning * into claimed;
+
+  if claimed.id is null then
+    insert into staff (id, auth_id, name, email, role, active, max_discount_percent)
+    values (
+      'usr_' || substr(replace(caller.id::text, '-', ''), 1, 12),
+      caller.id,
+      coalesce(nullif(caller.raw_user_meta_data ->> 'name', ''), split_part(caller.email, '@', 1)),
+      caller.email,
+      'admin',
+      true,
+      100
+    )
+    returning * into claimed;
+  end if;
+
+  return claimed;
+end;
+$$ language plpgsql security definer;
+
+-- `security definer` runs as the owner, so the search path is pinned rather
+-- than taken from the caller: without this, a schema earlier on someone's path
+-- could shadow `staff` and the function would write somewhere else entirely.
+alter function claim_admin() set search_path = public, auth;
+
+revoke all on function claim_admin() from public, anon;
+grant execute on function claim_admin() to authenticated;
+
 -- Anyone who signed up before the trigger existed still needs a record, and the
 -- earliest of them takes the system.
 insert into staff (id, auth_id, name, email, role, active, max_discount_percent)

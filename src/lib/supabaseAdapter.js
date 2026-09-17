@@ -586,6 +586,31 @@ export function createSupabaseAdapter({ getState, onAuthError = () => {} }) {
 /* ------------------------------------------------------------ bootstrap */
 
 /**
+ * Takes ownership of a project that has no administrator yet.
+ *
+ * The one call that can create an active admin without one already existing.
+ * All the judgement lives in the database function, which refuses the moment
+ * anybody can administer the project — see supabase/add-admin-claim.sql. This
+ * end only reports what happened.
+ *
+ * A refusal is an ordinary outcome rather than a fault: on a system that does
+ * have an owner, "no" is the correct answer and the caller shows the waiting
+ * message instead. So it is returned, not thrown.
+ */
+export async function claimAdmin() {
+  if (!isConfigured) throw new Error('Supabase is not configured.')
+  sb = sb || (await getSupabase())
+  if (!sb) throw new Error('Could not reach Supabase.')
+
+  const { data, error } = await sb.rpc('claim_admin')
+  // P0001 is the function saying no on purpose. Anything else is a real fault
+  // — the function not deployed, the network gone — and reads as one.
+  if (error?.code === 'P0001') return { claimed: false, reason: error.message }
+  if (error) throw fail('claim_admin', error)
+  return { claimed: true, account: Array.isArray(data) ? data[0] : data }
+}
+
+/**
  * Every product column except the picture. See `haveImagesFor` below.
  */
 const PRODUCT_COLUMNS = 'id, name, category, collection, description, status'

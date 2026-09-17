@@ -221,6 +221,9 @@ function SignIn() {
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  // Set when the password was right and the staff record behind it was not
+  // found. Only then is there anything to claim.
+  const [canClaim, setCanClaim] = useState(false)
 
   // Locks follow the address, so they appear as soon as the attacker types the
   // one they have been guessing at — and a device-wide lock shows for any.
@@ -231,11 +234,28 @@ function SignIn() {
     event.preventDefault()
     if (locked) return
     setError('')
+    setCanClaim(false)
     setBusy(true)
     try {
       await actions.signIn(email, password)
     } catch (err) {
       setError(err.message)
+      setCanClaim(Boolean(err.canClaim))
+      setBusy(false)
+    }
+  }
+
+  const claim = async () => {
+    setError('')
+    setBusy(true)
+    try {
+      await actions.claimAdmin()
+    } catch (err) {
+      // A refusal means somebody already owns this project, which is the
+      // ordinary case — so the offer goes away and the message stands on its
+      // own rather than inviting another go.
+      setError(err.message)
+      setCanClaim(false)
       setBusy(false)
     }
   }
@@ -284,6 +304,21 @@ function SignIn() {
       <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy || locked}>
         {locked ? 'Locked' : busy ? 'Checking…' : 'Sign in'}
       </button>
+
+      {canClaim && !locked && (
+        <div className="card col" style={{ marginTop: 4, gap: 8 }}>
+          <div style={{ fontWeight: 650 }}>Is this a brand-new system?</div>
+          <p className="small muted" style={{ margin: 0 }}>
+            Your password was accepted, so the only thing missing is the staff record behind it. If
+            nobody has set this system up yet, you can take it as the administrator now and add the
+            rest of the team afterwards. If somebody already has, this will say so and nothing will
+            change.
+          </p>
+          <button className="btn btn-block" type="button" onClick={claim} disabled={busy}>
+            {busy ? 'Checking…' : 'Set me up as administrator'}
+          </button>
+        </div>
+      )}
     </form>
   )
 }
