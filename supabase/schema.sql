@@ -390,6 +390,11 @@ end $$;
 -- move stock. Everything else is gated on the matching admin permission.
 create policy orders_write          on orders          for insert with check (has_permission('pos'));
 create policy orders_update         on orders          for update using (has_permission('pos'));
+-- Deleting a sale is a separate matter from taking one, so it is gated on the
+-- permission the app checks before it offers the button rather than on `pos`.
+-- Without a delete policy at all, RLS does not refuse the delete — it matches
+-- no rows, reports success, and the sale silently stays on the server.
+create policy orders_delete         on orders          for delete using (has_permission('records.delete'));
 create policy payments_write        on payments        for insert with check (has_permission('pos'));
 create policy returns_write         on returns         for insert with check (has_permission('refund'));
 create policy inventory_write       on inventory       for all    using (has_permission('pos'));

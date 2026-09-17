@@ -23,6 +23,9 @@ let writeError = null
 /** Set by a test to make reads of a named table fail. */
 let readError = null
 
+/** Set by a test to make every delete fail the way PostgREST would. */
+let deleteError = null
+
 const stubClient = {
   from(table) {
     return {
@@ -34,11 +37,11 @@ const stubClient = {
         return {
           in(column, values) {
             deletes.push({ table, column, values })
-            return Promise.resolve({ error: null })
+            return Promise.resolve({ error: deleteError })
           },
           eq(column, value) {
             deletes.push({ table, column, values: [value] })
-            return Promise.resolve({ error: null })
+            return Promise.resolve({ error: deleteError })
           },
         }
       },
@@ -140,6 +143,7 @@ beforeEach(() => {
   reads.length = 0
   writeError = null
   readError = null
+  deleteError = null
   for (const key of Object.keys(tables)) delete tables[key]
 })
 
@@ -506,6 +510,29 @@ describe('a backend that will not say who we are', () => {
     // The queue still treats it as unsent — the sale is not lost, it is held.
     expect(seen).toHaveLength(1)
     expect(seen[0].code).toBe('PGRST301')
+  })
+
+  /*
+   * Deleting the sales under an exhibition is the one write that reported its
+   * own failure instead of going through `fail`, and a bare Error carries no
+   * code. `drainOutbox` reads a code-less rejection as a dropped connection:
+   * it stops the queue and sends the lot again on the next tick, for ever.
+   * A row the database refuses outright has to be set aside instead, or one
+   * unlucky exhibition holds up every sale queued behind it.
+   */
+  it('marks a refused sales delete permanent rather than retrying it for ever', async () => {
+    deleteError = { code: '42501', message: 'permission denied for table orders' }
+    const adapter = createSupabaseAdapter({ getState: () => baseState() })
+
+    await expect(
+      adapter.push({
+        id: 'x1',
+        type: 'exhibition.delete',
+        clientId: 'x1',
+        payload: { exhibitionId: 'ex1', deleteSales: true },
+        createdAt: '',
+      }),
+    ).rejects.toMatchObject({ code: '42501', permanent: true })
   })
 
   it('stays quiet about an ordinary write failure', async () => {

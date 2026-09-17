@@ -448,7 +448,10 @@ const handlers = {
   async 'exhibition.delete'(entry, state) {
     if (entry.payload.deleteSales) {
       const { error } = await sb.from('orders').delete().eq('exhibition_id', entry.payload.exhibitionId)
-      if (error) throw new Error(`orders: ${error.message}`)
+      // Through `fail`, like every other write. A bare Error carries no code,
+      // so `drainOutbox` reads it as a dropped connection and retries it for
+      // ever — the one shape of failure this queue is built never to have.
+      if (error) throw fail('orders', error)
     }
     await remove('exhibitions', 'id', entry.payload.exhibitionId)
     await upsert('inventory', allInventoryCells(state).map(inventoryRow), 'location_id,variant_id')
