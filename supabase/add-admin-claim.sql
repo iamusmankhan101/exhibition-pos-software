@@ -90,3 +90,9 @@ alter function claim_admin() set search_path = public, auth;
 
 revoke all on function claim_admin() from public, anon;
 grant execute on function claim_admin() to authenticated;
+
+-- PostgREST routes rpc calls from a cached copy of the schema, so a function
+-- that exists in the database is still a 404 until that cache catches up. This
+-- is the nudge that makes the call work the moment this script finishes rather
+-- than whenever the cache next turns over.
+notify pgrst, 'reload schema';
