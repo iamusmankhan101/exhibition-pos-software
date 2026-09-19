@@ -781,13 +781,15 @@ table.data tbody tr.selected td { background: var(--brand-soft); }
 .receipt-qr { text-align: center; margin-top: 20px; }
 .receipt-qr img { width: 132px; height: 132px; }
 .receipt-foot { text-align: center; font-size: 11.5px; color: #8a8f9a; margin-top: 18px; line-height: 1.5; }
-.receipt-actions { width: 100%; max-width: 430px; display: flex; gap: 9px; flex-wrap: wrap; margin: 0 auto 16px; }
+.invoice-sheet { display: block; width: 100%; height: auto; background: #fff; border-radius: 6px; box-shadow: 0 2px 18px rgba(0, 0, 0, 0.08); }
+.receipt-actions { width: 100%; max-width: 720px; display: flex; gap: 9px; flex-wrap: wrap; margin: 0 auto 16px; }
 .receipt-actions .btn { flex: 1; min-width: 118px; }
 
 @media print {
   body { background: #fff; }
   .receipt-page { padding: 0; background: #fff; }
   .receipt { box-shadow: none; max-width: none; border-radius: 0; border: none; }
+  .invoice-sheet { box-shadow: none; border-radius: 0; }
   .no-print { display: none !important; }
 }
 

@@ -40,6 +40,8 @@ export default function SaleComplete({ order, onClose }) {
     () => ({
       business: state.settings.business,
       currencySymbol: state.settings.currencySymbol,
+      currencyCode: state.settings.currency,
+      bank: state.settings.bankDetails,
       design: state.settings.invoiceDesign,
       invoiceNo: order.invoiceNo,
       createdAt: order.createdAt,
@@ -93,13 +95,13 @@ export default function SaleComplete({ order, onClose }) {
    */
   useEffect(() => {
     let cancelled = false
-    buildReceiptImage(pdfData, qr)
+    buildReceiptImage(pdfData)
       .then((blob) => !cancelled && setImage(blob))
       .catch(() => !cancelled && setImage(null))
     return () => {
       cancelled = true
     }
-  }, [pdfData, qr])
+  }, [pdfData])
 
   const channels = state.settings.receiptChannels
 
@@ -117,7 +119,7 @@ export default function SaleComplete({ order, onClose }) {
         () => import('../../lib/pdf.js'),
         () => actions.toast('A new version was deployed — reloading…', 'warn'),
       )
-      const result = await shareInvoicePdf(pdfData, qr, note)
+      const result = await shareInvoicePdf(pdfData, note)
       if (result === 'downloaded') {
         actions.toast('PDF saved — attach it to your email', 'success')
       }
@@ -144,9 +146,9 @@ export default function SaleComplete({ order, onClose }) {
         () => actions.toast('A new version was deployed — reloading…', 'warn'),
       )
       if (canAttach) {
-        await pdf.shareInvoicePdf(pdfData, qr, note)
+        await pdf.shareInvoicePdf(pdfData, note)
       } else {
-        await pdf.downloadInvoicePdf(pdfData, qr)
+        await pdf.downloadInvoicePdf(pdfData)
         actions.toast('PDF saved — attach it in the chat', 'success')
       }
     } catch {
@@ -180,7 +182,7 @@ export default function SaleComplete({ order, onClose }) {
     // Called synchronously so Safari still counts this as the click that asked
     // for it. The blob is normally already rendered; the promise form covers the
     // case where the screen was only just opened.
-    const pending = image ? Promise.resolve(image) : buildReceiptImage(pdfData, qr)
+    const pending = image ? Promise.resolve(image) : buildReceiptImage(pdfData)
 
     return copyReceiptImage(pending)
       .then(async (ok) => {
@@ -224,7 +226,7 @@ export default function SaleComplete({ order, onClose }) {
         () => import('../../lib/pdf.js'),
         () => actions.toast('A new version was deployed — reloading…', 'warn'),
       )
-      await downloadInvoicePdf(pdfData, qr)
+      await downloadInvoicePdf(pdfData)
     } catch {
       actions.toast('Could not build the PDF', 'error')
     } finally {

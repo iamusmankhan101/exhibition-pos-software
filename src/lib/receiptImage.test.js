@@ -16,6 +16,8 @@ function stubContext() {
     fillText: (text) => drawn.text.push(String(text)),
     measureText: (text) => ({ width: String(text).length * 7 }),
     beginPath: vi.fn(),
+    arc: vi.fn(),
+    fill: vi.fn(),
     moveTo: vi.fn(),
     lineTo: vi.fn(),
     stroke: vi.fn(),
@@ -100,58 +102,74 @@ const data = {
 }
 
 describe('buildReceiptImage', () => {
-  it('draws the whole slip and returns a PNG blob', async () => {
-    const blob = await buildReceiptImage(data, 'data:image/png;base64,QR')
+  // Letter-spaced headings are drawn a character at a time, so read the page
+  // back with every fragment joined as well as one per line.
+  const everything = () => `${drawn.text.join('\n')}\n${drawn.text.join('')}`
+
+  it('draws the invoice and returns a PNG blob', async () => {
+    const blob = await buildReceiptImage(data)
     expect(blob.type).toBe('image/png')
   })
 
   it('carries every figure a customer would check', async () => {
-    await buildReceiptImage(data, null)
-    const text = drawn.text.join('\n')
+    await buildReceiptImage({ ...data, currencyCode: 'PKR' })
+    const text = everything()
 
-    expect(text).toContain('Tareez Tech')
+    expect(text).toContain('INVOICE')
     expect(text).toContain('TRZ-260907-WQ005')
-    expect(text).toContain('Usman')
-    expect(text).toContain('Embroidered Scarf')
-    expect(text).toContain('Silk Abaya')
+    expect(text).toContain('USMAN')
+    expect(text).toContain('EMBROIDERED SCARF × 2')
+    expect(text).toContain('SILK ABAYA')
     expect(text).toContain('TOTAL')
-    // Line total for 2 × 2000, and the sale total, both formatted as money.
-    expect(text).toContain('Rs 4,000.00')
-    expect(text).toContain('Rs 5,500.00')
-    // The stall price was below list, so the saving is shown.
-    expect(text).toContain('was Rs 2,500.00')
+    // Unit price, line total for 2 × 2000, subtotal with the code, and the total.
+    expect(drawn.text).toContain('2000')
+    expect(drawn.text).toContain('4000')
+    expect(drawn.text).toContain('PKR 5500')
+    expect(drawn.text).toContain('5500')
+    expect(text).toContain('was 2500')
+    expect(text).toContain('Thank you!')
   })
 
-  it('crops to the content rather than shipping a tall blank slip', async () => {
-    await buildReceiptImage(data, null)
+  it('prints the bank details and the from block', async () => {
+    await buildReceiptImage({
+      ...data,
+      business: { ...data.business, legalName: 'Tareez Fashion' },
+      bank: { accountName: 'A M SHEIKH', bank: 'Meezan Bank', accountNumber: '0283', iban: 'PK75MEZN' },
+    })
+    const text = everything()
+    expect(text).toContain('Tareez Fashion')
+    expect(text).toContain('ACCOUNT DETAILS:')
+    expect(text).toContain('Account Number: 0283')
+    expect(text).toContain('IBAN: PK75MEZN')
+  })
+
+  it('stays A4 for a short sale and grows for a long one', async () => {
+    await buildReceiptImage(data)
     const short = drawn.height
 
     drawn.text = []
-    await buildReceiptImage({ ...data, items: Array.from({ length: 12 }, () => data.items[0]) }, null)
+    await buildReceiptImage({ ...data, items: Array.from({ length: 14 }, () => data.items[0]) })
 
-    expect(short).toBeGreaterThan(0)
-    // The uncropped working canvas is 4200 logical px; a real crop is well under.
-    expect(short).toBeLessThan(4200 * 2)
+    expect(short).toBe(297 * 5)
     expect(drawn.height).toBeGreaterThan(short)
   })
 
-  it('renders without a logo or QR rather than failing', async () => {
-    const blob = await buildReceiptImage({ ...data, business: { ...data.business, logo: null } }, null)
+  it('renders without a logo rather than failing', async () => {
+    const blob = await buildReceiptImage({ ...data, business: { ...data.business, logo: null } })
     expect(blob.type).toBe('image/png')
-    // Only the crop copy — neither the logo nor the QR was drawn.
-    expect(drawn.images).toBe(1)
+    expect(drawn.images).toBe(0)
   })
 
-  it('places the logo and the QR when both are supplied', async () => {
-    await buildReceiptImage(data, 'data:image/png;base64,QR')
-    expect(drawn.images).toBe(3)
+  it('places the logo when there is one', async () => {
+    await buildReceiptImage(data)
+    expect(drawn.images).toBeGreaterThanOrEqual(1)
   })
 
   it('shows a balance still owed', async () => {
-    await buildReceiptImage({ ...data, amountPaid: 3000, balanceDue: 2500, status: 'Partially Paid' }, null)
-    const text = drawn.text.join('\n')
+    await buildReceiptImage({ ...data, amountPaid: 3000, balanceDue: 2500, status: 'Partially Paid' })
+    const text = everything()
     expect(text).toContain('Balance due')
-    expect(text).toContain('Rs 2,500.00')
+    expect(drawn.text).toContain('2500')
     expect(text).toContain('PARTIALLY PAID')
   })
 })

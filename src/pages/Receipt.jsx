@@ -9,9 +9,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
-import { formatDate, money } from '../lib/format.js'
-import { decodeReceipt, receiptQr } from '../lib/receipt.js'
+import { money } from '../lib/format.js'
+import { decodeReceipt } from '../lib/receipt.js'
+import { buildReceiptImage } from '../lib/receiptImage.js'
 import { loadChunk } from '../lib/chunk.js'
+import { TAREEZ_LOGO } from '../lib/seed.js'
 
 function fragmentPayload() {
   const hash = window.location.hash
@@ -22,13 +24,14 @@ function fragmentPayload() {
 export default function Receipt() {
   const { orderId } = useParams()
   const context = useApp()
-  const [qr, setQr] = useState(null)
+  const [image, setImage] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const fromFragment = useMemo(fragmentPayload, [])
 
   const data = useMemo(() => {
-    if (fromFragment) return fromFragment
+    // The link cannot carry the logo, so a customer's phone draws the bundled one.
+    if (fromFragment) return { ...fromFragment, business: { logo: TAREEZ_LOGO, ...fromFragment.business } }
     const state = context.state
     if (!state) return null
     const order = state.orders.find((entry) => entry.id === orderId)
@@ -38,6 +41,8 @@ export default function Receipt() {
     return {
       business: state.settings.business,
       currencySymbol: state.settings.currencySymbol,
+      currencyCode: state.settings.currency,
+      bank: state.settings.bankDetails,
       design: state.settings.invoiceDesign || {},
       invoiceNo: order.invoiceNo,
       createdAt: order.createdAt,
@@ -71,14 +76,23 @@ export default function Receipt() {
   }, [fromFragment, context.state, orderId])
 
   useEffect(() => {
-    receiptQr(window.location.href).then(setQr).catch(() => setQr(null))
-  }, [])
+    if (!data) return undefined
+    let url = null
+    buildReceiptImage(data)
+      .then((blob) => {
+        if (!blob) return
+        url = URL.createObjectURL(blob)
+        setImage(url)
+      })
+      .catch(() => setImage(null))
+    return () => url && URL.revokeObjectURL(url)
+  }, [data])
 
   const savePdf = async () => {
     setBusy(true)
     try {
       const { downloadInvoicePdf } = await loadChunk(() => import('../lib/pdf.js'))
-      await downloadInvoicePdf(data, qr)
+      await downloadInvoicePdf(data)
     } catch {
       /* the print button remains as a fallback */
     } finally {
@@ -102,17 +116,9 @@ export default function Receipt() {
     )
   }
 
-  const design = data.design || {}
-
-  const cur = (value) =>
-    `${data.currencySymbol}${Number(money(value || 0)).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`
-
   return (
     <div className="receipt-page">
-      <div style={{ width: '100%', maxWidth: 430 }}>
+      <div style={{ width: '100%', maxWidth: 720 }}>
         <div className="receipt-actions no-print">
           <button className="btn" disabled={busy} onClick={savePdf}>
             {busy ? 'Building…' : 'Download PDF'}
@@ -125,173 +131,13 @@ export default function Receipt() {
           </button>
         </div>
 
-        <article className="receipt">
-          {design.showLogo !== false && (
-            /* The accent fill is for the letter fallback only — behind a logo
-               it is a coloured box the logo has to fight. */
-            data.business.logo ? (
-              <img
-                className="brand-logo receipt-brand-logo"
-                src={data.business.logo}
-                alt={data.business.name}
-              />
-            ) : (
-              <div
-                className="receipt-logo"
-                style={design.accent ? { background: design.accent } : undefined}
-              >
-                {data.business.name?.slice(0, 1)}
-              </div>
-            )
-          )}
-          <h1>{data.business.name}</h1>
-          {data.business.tagline && <p className="tagline">{data.business.tagline}</p>}
-          <p className="tagline">
-            {[data.business.phone, data.business.email].filter(Boolean).join(' · ')}
-          </p>
-          {data.business.address && <p className="tagline">{data.business.address}</p>}
-
-          {data.status && data.status !== 'Completed' && (
-            <p
-              className="center"
-              style={{
-                marginTop: 14,
-                marginBottom: 0,
-                fontWeight: 700,
-                color: data.status === 'Cancelled' ? '#c0392b' : '#b7791f',
-              }}
-            >
-              {data.status.toUpperCase()}
-            </p>
-          )}
-
-          <hr />
-
-          <div className="kv">
-            <span>Invoice</span>
-            <span>{data.invoiceNo}</span>
+        {image ? (
+          <img className="invoice-sheet" src={image} alt={`Invoice ${data.invoiceNo}`} />
+        ) : (
+          <div className="boot" style={{ minHeight: 300 }}>
+            <div className="spinner" />
           </div>
-          <div className="kv">
-            <span>Date</span>
-            <span>{formatDate(data.createdAt, true)}</span>
-          </div>
-          {design.showExhibition !== false && data.exhibitionName && (
-            <div className="kv">
-              <span>Exhibition</span>
-              <span>{data.exhibitionName}</span>
-            </div>
-          )}
-          {design.showSalesperson !== false && (
-            <div className="kv">
-              <span>Served by</span>
-              <span>{data.salespersonName}</span>
-            </div>
-          )}
-          <div className="kv">
-            <span>Customer</span>
-            <span>{data.customerName}</span>
-          </div>
-          {design.showCustomerContact !== false && data.customerContact && (
-            <div className="kv">
-              <span>Contact</span>
-              <span>{data.customerContact}</span>
-            </div>
-          )}
-
-          <hr />
-
-          {data.items.map((item, index) => (
-            <div className="receipt-line" key={index}>
-              <div className="desc">
-                {item.name}
-                <small>
-                  {[item.variant, `${item.quantity} × ${cur(item.unitPrice)}`].filter(Boolean).join(' · ')}
-                  {/* What the customer would have paid off the stall. */}
-                  {item.listPrice > item.unitPrice && (
-                    <> · <span style={{ textDecoration: 'line-through' }}>{cur(item.listPrice)}</span></>
-                  )}
-                </small>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontWeight: 600 }}>{cur(item.quantity * item.unitPrice)}</div>
-                {item.listPrice > item.unitPrice && (
-                  <small style={{ opacity: 0.7 }}>
-                    saved {cur((item.listPrice - item.unitPrice) * item.quantity)}
-                  </small>
-                )}
-              </div>
-            </div>
-          ))}
-
-          <hr />
-
-          <div className="kv">
-            <span>Subtotal</span>
-            <span>{cur(data.subtotal)}</span>
-          </div>
-          {data.discountAmount > 0 && (
-            <div className="kv">
-              <span>Discount</span>
-              <span>−{cur(data.discountAmount)}</span>
-            </div>
-          )}
-          {data.promoAmount > 0 && (
-            <div className="kv">
-              <span>Promo {data.promoCode}</span>
-              <span>−{cur(data.promoAmount)}</span>
-            </div>
-          )}
-          {design.showTaxBreakdown !== false && data.tax > 0 && (
-            <div className="kv">
-              <span>
-                VAT {data.taxRate}% {data.taxInclusive ? '(included)' : ''}
-              </span>
-              <span>{cur(data.tax)}</span>
-            </div>
-          )}
-
-          <div className="receipt-total">
-            <span>Total</span>
-            <span>{cur(data.total)}</span>
-          </div>
-          <div className="kv" style={{ marginTop: 8 }}>
-            <span>Paid by</span>
-            <span>{data.paymentMethod}</span>
-          </div>
-          {data.paymentParts?.map((part) => (
-            <div className="kv" key={part.method} style={{ opacity: 0.75 }}>
-              <span>&nbsp;&nbsp;{part.method}</span>
-              <span>{cur(part.amount)}</span>
-            </div>
-          ))}
-          {data.balanceDue > 0 && (
-            <>
-              <div className="kv">
-                <span>Amount received</span>
-                <span>{cur(data.amountPaid)}</span>
-              </div>
-              <div className="kv">
-                <span style={{ color: '#c0343d' }}>Balance due</span>
-                <span style={{ color: '#c0343d' }}>{cur(data.balanceDue)}</span>
-              </div>
-            </>
-          )}
-
-          {design.showQr !== false && qr && (
-            <div className="receipt-qr">
-              <img src={qr} alt="Receipt QR code" />
-              <p className="tagline" style={{ marginTop: 6 }}>
-                Scan to reopen this receipt
-              </p>
-            </div>
-          )}
-
-          <div className="receipt-foot">
-            {data.business.vatNumber && <div>VAT No. {data.business.vatNumber}</div>}
-            {design.showTerms !== false && data.terms && <p style={{ margin: '8px 0 0' }}>{data.terms}</p>}
-            {data.footer && <p style={{ margin: '8px 0 0' }}>{data.footer}</p>}
-          </div>
-        </article>
+        )}
       </div>
     </div>
   )

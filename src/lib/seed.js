@@ -50,6 +50,8 @@ export const DEFAULT_SETTINGS = {
     showTerms: true,
     paperSize: 'a4',
   },
+  // Printed under "Account details" on the invoice. Empty lines are left off.
+  bankDetails: { accountName: '', bank: '', accountNumber: '', iban: '' },
   paymentMethods: ['Cash', 'Card', 'Bank Transfer', 'Online Payment'],
   // Product categories the business has defined. Empty on a fresh install —
   // the catalogue names its own, nothing is invented here.

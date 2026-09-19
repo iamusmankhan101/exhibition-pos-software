@@ -34,12 +34,25 @@ export function encodeReceipt(order, settings, exhibitionName, customer) {
   const payload = {
     v: 1,
     b: settings.business.name,
+    bl: settings.business.legalName,
     bt: settings.business.tagline,
     bp: settings.business.phone,
     be: settings.business.email,
     ba: settings.business.address,
     bv: settings.business.vatNumber,
     cur: settings.currencySymbol,
+    cd: settings.currency,
+    // Bank lines only travel when there are any, to keep the link short.
+    ...(Object.values(settings.bankDetails || {}).some(Boolean)
+      ? {
+          bk: [
+            settings.bankDetails.accountName,
+            settings.bankDetails.bank,
+            settings.bankDetails.accountNumber,
+            settings.bankDetails.iban,
+          ],
+        }
+      : {}),
     inv: order.invoiceNo,
     dt: order.createdAt,
     ex: exhibitionName,
@@ -83,6 +96,7 @@ export function decodeReceipt(encoded) {
     return {
       business: {
         name: data.b,
+        legalName: data.bl,
         tagline: data.bt,
         phone: data.bp,
         email: data.be,
@@ -90,6 +104,10 @@ export function decodeReceipt(encoded) {
         vatNumber: data.bv,
       },
       currencySymbol: data.cur,
+      currencyCode: data.cd,
+      bank: data.bk
+        ? { accountName: data.bk[0], bank: data.bk[1], accountNumber: data.bk[2], iban: data.bk[3] }
+        : {},
       invoiceNo: data.inv,
       createdAt: data.dt,
       exhibitionName: data.ex,

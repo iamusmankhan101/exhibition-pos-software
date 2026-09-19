@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Avatar, Confirm, EmptyState, Field, ImagePicker, Modal, Tabs } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
@@ -6,6 +6,7 @@ import { formatDate, uid } from '../../lib/format.js'
 import { ALL_PERMISSIONS, PERMISSION_GROUPS } from '../../lib/permissions.js'
 import { categoryUsage, productCategories } from '../../lib/domain.js'
 import { loadChunk } from '../../lib/chunk.js'
+import { buildReceiptImage } from '../../lib/receiptImage.js'
 
 const CURRENCIES = [
   ['GBP', '£'],
@@ -421,56 +422,37 @@ export default function Settings() {
       {tab === 'invoice' && (
         <div className="grid grid-split">
           <div className="card col">
-            <div className="card-title">Layout</div>
-
-            <Field label="Accent colour" hint="Used on the invoice header, footer bar and logo tile.">
-              <div className="row wrap" style={{ gap: 8 }}>
-                {['#021b8d', '#14171c', '#2f75d8', '#7c5cd6', '#c2410c', '#be185d'].map((swatch) => (
-                  <button
-                    key={swatch}
-                    onClick={() => patchDesign({ accent: swatch })}
-                    aria-label={swatch}
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: 9,
-                      background: swatch,
-                      border: design.accent === swatch ? '3px solid var(--text)' : '1px solid var(--line)',
-                      cursor: 'pointer',
-                    }}
-                  />
-                ))}
+            <div className="card-title">Account details</div>
+            <p className="small muted" style={{ margin: 0 }}>
+              Printed on every invoice so customers can pay by bank transfer. Leave a line empty to leave it off.
+            </p>
+            {[
+              ['accountName', 'Account title', 'AFSHAN MUNIR SHEIKH'],
+              ['bank', 'Bank & branch', 'Meezan Bank - Main Boulevard DHA Lhr'],
+              ['accountNumber', 'Account number', '02830107528322'],
+              ['iban', 'IBAN', 'PK75MEZN0002830107528322'],
+            ].map(([key, label, placeholder]) => (
+              <Field key={key} label={label}>
                 <input
                   className="input"
-                  style={{ width: 110 }}
-                  value={design.accent}
-                  onChange={(event) => patchDesign({ accent: event.target.value })}
+                  placeholder={placeholder}
+                  value={draft.bankDetails?.[key] || ''}
+                  onChange={(event) =>
+                    patch({ bankDetails: { ...draft.bankDetails, [key]: event.target.value } })
+                  }
                 />
-              </div>
-            </Field>
-
-            <Field label="Paper size">
-              <select
-                className="select"
-                value={design.paperSize}
-                onChange={(event) => patchDesign({ paperSize: event.target.value })}
-              >
-                <option value="a4">A4 — standard invoice</option>
-                <option value="a5">A5 — compact</option>
-              </select>
-            </Field>
+              </Field>
+            ))}
+            <p className="small muted" style={{ margin: 0 }}>
+              The "From" block uses the legal name, address and phone from the Business tab.
+            </p>
 
             <div className="card-title" style={{ marginTop: 6 }}>
               Show on the invoice
             </div>
             {[
               ['showLogo', 'Business logo'],
-              ['showCustomerContact', 'Customer phone and email'],
-              ['showExhibition', 'Exhibition name'],
-              ['showSalesperson', 'Salesperson name'],
               ['showTaxBreakdown', 'VAT breakdown'],
-              ['showQr', 'QR code'],
-              ['showTerms', 'Terms & conditions'],
             ].map(([key, label]) => (
               <label key={key} className="checkbox">
                 <input
@@ -1383,193 +1365,60 @@ function sampleInvoice(settings) {
   return {
     business: settings.business,
     currencySymbol: settings.currencySymbol,
+    currencyCode: settings.currency,
+    bank: settings.bankDetails,
     design: settings.invoiceDesign,
     invoiceNo: `${settings.invoicePrefix}-260816-A1042`,
     createdAt: new Date().toISOString(),
     exhibitionName: 'Example Exhibition',
     salespersonName: 'Salesperson name',
-    customerName: 'Customer name',
-    customerContact: '+44 7700 900000 · customer@example.com',
-    items: [
-      { name: 'Example product', variant: 'Black / One Size', quantity: 2, unitPrice: 68 },
-      { name: 'Second example product', variant: 'Stone / M', quantity: 1, unitPrice: 210 },
-    ],
-    subtotal: 346,
-    discountAmount: 34.6,
-    tax: 51.9,
+    customerName: 'Mrs Ambreen',
+    customerContact: '',
+    items: [{ name: 'Orange Long Dress', variant: '', quantity: 1, unitPrice: 6500 }],
+    subtotal: 6500,
+    discountAmount: 0,
+    tax: 0,
     taxRate: settings.taxRate,
     taxInclusive: settings.taxInclusive,
-    total: 311.4,
+    total: 6500,
     paymentMethod: 'Card',
     terms: settings.terms,
   }
 }
 
+/** The real invoice renderer, so the preview is exactly what customers get. */
 function InvoicePreview({ settings }) {
-  const design = settings.invoiceDesign
-  const sample = sampleInvoice(settings)
-  const cur = (value) => `${settings.currencySymbol}${Number(value).toFixed(2)}`
+  const [src, setSrc] = useState(null)
 
-  return (
-    <div
-      style={{
-        background: '#fff',
-        border: '1px solid var(--line)',
-        borderRadius: 10,
-        overflow: 'hidden',
-        color: '#14171c',
-        fontSize: 11,
-        boxShadow: 'var(--shadow-xs)',
-      }}
-    >
-      <div style={{ height: 5, background: design.accent }} />
-      <div style={{ padding: 16 }}>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-          {design.showLogo !== false && (
-            /* Mirrors what the PDF actually draws: the logo at its own
-               proportions, or the accent square behind the letter fallback. */
-            settings.business.logo ? (
-              <img
-                className="brand-logo"
-                src={settings.business.logo}
-                alt={settings.business.name}
-                style={{ height: 26, maxWidth: 96, flexShrink: 0 }}
-              />
-            ) : (
-              <div
-                style={{
-                  width: 34,
-                  height: 34,
-                  borderRadius: 8,
-                  background: design.accent,
-                  color: '#fff',
-                  display: 'grid',
-                  placeItems: 'center',
-                  fontWeight: 700,
-                  overflow: 'hidden',
-                  flexShrink: 0,
-                }}
-              >
-                {settings.business.name.slice(0, 1)}
-              </div>
-            )
-          )}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{settings.business.name}</div>
-            <div style={{ color: '#8a8f9a', fontSize: 9.5 }}>
-              {[settings.business.phone, settings.business.email].filter(Boolean).join(' · ')}
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: design.accent }}>INVOICE</div>
-            <div style={{ color: '#8a8f9a', fontSize: 9.5 }}>{sample.invoiceNo}</div>
-          </div>
-        </div>
+  useEffect(() => {
+    let url = null
+    let cancelled = false
+    // Debounced: every keystroke in the bank fields would otherwise redraw A4.
+    const timer = setTimeout(() => {
+      buildReceiptImage(sampleInvoice(settings))
+        .then((blob) => {
+          if (cancelled || !blob) return
+          url = URL.createObjectURL(blob)
+          setSrc(url)
+        })
+        .catch(() => {})
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [settings])
 
-        <div style={{ borderTop: '1px solid #eceef2', margin: '12px 0' }} />
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 9.5 }}>
-          <div>
-            <div style={{ color: '#8a8f9a' }}>BILLED TO</div>
-            <div style={{ fontWeight: 600 }}>{sample.customerName}</div>
-            {design.showCustomerContact !== false && (
-              <div style={{ color: '#6f7784' }}>{sample.customerContact}</div>
-            )}
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            {design.showExhibition !== false && (
-              <div>
-                <span style={{ color: '#8a8f9a' }}>Exhibition </span>
-                <strong>{sample.exhibitionName}</strong>
-              </div>
-            )}
-            {design.showSalesperson !== false && (
-              <div>
-                <span style={{ color: '#8a8f9a' }}>Served by </span>
-                <strong>{sample.salespersonName}</strong>
-              </div>
-            )}
-            <div>
-              <span style={{ color: '#8a8f9a' }}>Payment </span>
-              <strong>{sample.paymentMethod}</strong>
-            </div>
-          </div>
-        </div>
-
-        <div style={{ background: '#f6f7f9', padding: '5px 8px', margin: '12px 0 6px', fontSize: 8.5, color: '#8a8f9a', display: 'flex', fontWeight: 700 }}>
-          <span style={{ flex: 1 }}>DESCRIPTION</span>
-          <span style={{ width: 34, textAlign: 'right' }}>QTY</span>
-          <span style={{ width: 54, textAlign: 'right' }}>TOTAL</span>
-        </div>
-
-        {sample.items.map((item) => (
-          <div key={item.name} style={{ display: 'flex', padding: '5px 8px', borderBottom: '1px solid #f4f5f7' }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{item.name}</div>
-              <div style={{ color: '#8a8f9a', fontSize: 9 }}>{item.variant}</div>
-            </div>
-            <span style={{ width: 34, textAlign: 'right' }}>{item.quantity}</span>
-            <span style={{ width: 54, textAlign: 'right', fontWeight: 600 }}>
-              {cur(item.quantity * item.unitPrice)}
-            </span>
-          </div>
-        ))}
-
-        <div style={{ marginTop: 10, marginLeft: 'auto', width: 150 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#6f7784' }}>
-            <span>Subtotal</span>
-            <span>{cur(sample.subtotal)}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#6f7784' }}>
-            <span>Discount</span>
-            <span>−{cur(sample.discountAmount)}</span>
-          </div>
-          {design.showTaxBreakdown !== false && settings.taxEnabled && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#6f7784' }}>
-              <span>VAT {settings.taxRate}%</span>
-              <span>{cur(sample.tax)}</span>
-            </div>
-          )}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              fontWeight: 700,
-              fontSize: 12,
-              borderTop: '1.5px solid #14171c',
-              marginTop: 4,
-              paddingTop: 4,
-            }}
-          >
-            <span>TOTAL</span>
-            <span>{cur(sample.total)}</span>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 16 }}>
-          {design.showQr !== false && (
-            <div
-              style={{
-                width: 34,
-                height: 34,
-                background: '#eceef2',
-                borderRadius: 4,
-                display: 'grid',
-                placeItems: 'center',
-                fontSize: 7,
-                color: '#8a8f9a',
-                flexShrink: 0,
-              }}
-            >
-              QR
-            </div>
-          )}
-          {design.showTerms !== false && (
-            <div style={{ color: '#8a8f9a', fontSize: 8.5, lineHeight: 1.5 }}>{settings.terms}</div>
-          )}
-        </div>
-      </div>
-      <div style={{ height: 5, background: design.accent }} />
+  return src ? (
+    <img
+      src={src}
+      alt="Invoice preview"
+      style={{ width: '100%', border: '1px solid var(--line)', borderRadius: 8, background: '#fff' }}
+    />
+  ) : (
+    <div className="boot" style={{ minHeight: 240 }}>
+      <div className="spinner" />
     </div>
   )
 }
