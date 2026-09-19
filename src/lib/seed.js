@@ -54,6 +54,9 @@ export const DEFAULT_SETTINGS = {
   // Product categories the business has defined. Empty on a fresh install —
   // the catalogue names its own, nothing is invented here.
   categories: [],
+  // Stitching services sold alongside the cloth: `{ id, name, price }`.
+  // Added to a sale from the till, never stocked.
+  stitching: [],
   terms:
     'Items may be returned within 14 days with this receipt. Sale items and custom pieces are final. Thank you for supporting Tareez.',
   marketingConsentText:

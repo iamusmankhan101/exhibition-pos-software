@@ -11,6 +11,7 @@ import POS from './pages/pos/POS.jsx'
 import Dashboard from './pages/admin/Dashboard.jsx'
 import Sales from './pages/admin/Sales.jsx'
 import Products from './pages/admin/Products.jsx'
+import Stitching from './pages/admin/Stitching.jsx'
 import Inventory from './pages/admin/Inventory.jsx'
 import Exhibitions from './pages/admin/Exhibitions.jsx'
 import Customers from './pages/admin/Customers.jsx'
@@ -109,6 +110,14 @@ function Shell() {
             element={
               <Guard permission="admin.products">
                 <Products />
+              </Guard>
+            }
+          />
+          <Route
+            path="stitching"
+            element={
+              <Guard permission="admin.products">
+                <Stitching />
               </Guard>
             }
           />

@@ -12,6 +12,8 @@ import {
   findVariant,
   getStock,
   hasExhibitionPrice,
+  isServiceLine,
+  SERVICE_PREFIX,
   sellingPrice,
 } from '../../lib/domain.js'
 import { formatTime, money, variantLabel } from '../../lib/format.js'
@@ -45,6 +47,7 @@ export default function POS() {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All')
   const [scanOpen, setScanOpen] = useState(false)
+  const [stitchOpen, setStitchOpen] = useState(false)
   const [variantPick, setVariantPick] = useState(null)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
@@ -192,9 +195,42 @@ export default function POS() {
     [state, exhibitionId, putInCart, oversellApproval],
   )
 
+  /** Adds a stitching service line. Services carry no stock, so no checks. */
+  const addStitching = (option) => {
+    if (navigator.vibrate) navigator.vibrate(12)
+    const variantId = `${SERVICE_PREFIX}${option.id}`
+    setCart((current) =>
+      current.some((item) => item.variantId === variantId)
+        ? current.map((item) => (item.variantId === variantId ? { ...item, quantity: item.quantity + 1 } : item))
+        : [
+            {
+              productId: null,
+              variantId,
+              name: `Stitching – ${option.name}`,
+              sku: '',
+              category: 'Stitching',
+              size: '',
+              color: '',
+              image: '',
+              service: 'stitching',
+              quantity: 1,
+              listPrice: money(option.price),
+              unitPrice: money(option.price),
+              lineDiscount: 0,
+            },
+            ...current,
+          ],
+    )
+    actions.toast(`Stitching – ${option.name} added`, 'success')
+  }
+
   const setQuantity = (variantId, quantity) => {
     if (quantity <= 0) {
       setCart((current) => current.filter((item) => item.variantId !== variantId))
+      return
+    }
+    if (isServiceLine(variantId)) {
+      setCart((current) => current.map((item) => (item.variantId === variantId ? { ...item, quantity } : item)))
       return
     }
     const available = getStock(state, exhibitionId, variantId)
@@ -278,7 +314,7 @@ export default function POS() {
   useEffect(() => {
     // The camera modal is its own scanner, and the rest are modals where adding
     // a line behind the operator's back would be worse than ignoring the scan.
-    const idle = !scanOpen && !checkoutOpen && !completed && !variantPick && !discountItem && !oversellRequest
+    const idle = !scanOpen && !stitchOpen && !checkoutOpen && !completed && !variantPick && !discountItem && !oversellRequest
     if (!idle) return undefined
 
     // Read through a ref rather than depending on `handleScan`, which changes
@@ -289,7 +325,7 @@ export default function POS() {
     const onKeyDown = (event) => reader.handle(event)
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [scanOpen, checkoutOpen, completed, variantPick, discountItem, oversellRequest])
+  }, [scanOpen, stitchOpen, checkoutOpen, completed, variantPick, discountItem, oversellRequest])
 
   const submitSearch = (event) => {
     event.preventDefault()
@@ -366,6 +402,12 @@ export default function POS() {
               <Icon name="scan" size={16} />
               Scan
             </button>
+            {(state.settings.stitching || []).length > 0 && (
+              <button type="button" className="btn" onClick={() => setStitchOpen(true)}>
+                <Icon name="scissors" size={16} />
+                Stitching
+              </button>
+            )}
             <input
               className="input"
               placeholder="Search name, SKU or barcode"
@@ -497,11 +539,19 @@ export default function POS() {
             const discounted = (item.lineDiscount || 0) > 0
             return (
               <div key={item.variantId} className="cart-item">
-                <Thumb src={item.image} name={item.name} />
+                {isServiceLine(item.variantId) ? (
+                  <div className="cart-thumb" style={{ background: 'var(--surface-2)', color: 'var(--brand)' }}>
+                    <Icon name="scissors" size={18} />
+                  </div>
+                ) : (
+                  <Thumb src={item.image} name={item.name} />
+                )}
                 <div className="cart-info">
                   <div className="cart-name">{item.name}</div>
                   <div className="cart-var">
-                    {[item.color, item.size].filter(Boolean).join(' · ')} · {item.sku}
+                    {isServiceLine(item.variantId)
+                      ? 'Stitching service'
+                      : [item.color, item.size, item.sku].filter(Boolean).join(' · ')}
                   </div>
                   <div className="row-between" style={{ marginTop: 7 }}>
                     <div className="row" style={{ gap: 6 }}>
@@ -619,6 +669,39 @@ export default function POS() {
         </Suspense>
         <div className="small muted center">
           Keep scanning to add more items — the cart updates behind this window.
+        </div>
+      </Modal>
+
+      <Modal
+        open={stitchOpen}
+        onClose={() => setStitchOpen(false)}
+        title="Add stitching"
+        subtitle="Tap a garment to add its stitching to this sale"
+      >
+        <div className="stack" style={{ display: 'grid', gap: 8 }}>
+          {(state.settings.stitching || []).map((option) => {
+            const inCart = cart.find((item) => item.variantId === `${SERVICE_PREFIX}${option.id}`)
+            return (
+              <button
+                key={option.id}
+                className="btn btn-block"
+                style={{ justifyContent: 'space-between', padding: '14px 16px', height: 'auto' }}
+                onClick={() => addStitching(option)}
+              >
+                <span className="row" style={{ gap: 10, textAlign: 'left' }}>
+                  <Icon name="scissors" size={16} />
+                  <span>
+                    <span style={{ fontWeight: 620 }}>{option.name}</span>
+                    {option.note && <span className="small muted"> · {option.note}</span>}
+                    {inCart && <span className="small" style={{ color: 'var(--brand)' }}> · {inCart.quantity} in cart</span>}
+                  </span>
+                </span>
+                <span className="mono" style={{ fontWeight: 650 }}>
+                  {currency(option.price)}
+                </span>
+              </button>
+            )
+          })}
         </div>
       </Modal>
 

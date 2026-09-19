@@ -36,6 +36,14 @@ export function locationName(state, locationId) {
 
 export const isExhibition = (locationId) => Boolean(locationId) && locationId !== MAIN_LOCATION
 
+/*
+ * A stitching line is a service, not stock: its `variantId` is the option id
+ * behind this prefix so reports still group it, but nothing is ever counted
+ * or moved for it.
+ */
+export const SERVICE_PREFIX = 'svc_'
+export const isServiceLine = (variantId) => String(variantId || '').startsWith(SERVICE_PREFIX)
+
 export function getStock(state, locationId, variantId) {
   return state.inventory[inventoryKey(locationId, variantId)]?.quantity ?? 0
 }
@@ -45,6 +53,7 @@ export function getStock(state, locationId, variantId) {
  * Returns a new state — never mutates the argument.
  */
 export function applyStockChange(state, { locationId, variantId, delta, type, reference, userId, note }) {
+  if (isServiceLine(variantId)) return state
   const key = inventoryKey(locationId, variantId)
   const current = state.inventory[key]?.quantity ?? 0
   const inventory = {
@@ -394,6 +403,7 @@ export function createOrder(state, payload) {
   // Stock validation happens here so an offline replay cannot oversell silently.
   const oversold = []
   for (const item of items) {
+    if (isServiceLine(item.variantId)) continue
     const available = getStock(state, exhibitionId, item.variantId)
     if (item.quantity > available) {
       oversold.push({ name: item.name, sku: item.sku, requested: item.quantity, available })
@@ -727,6 +737,7 @@ export function refundOrder(state, { orderId, lines, refundMethod, reason, userI
 
 /** Writes a stock balance without logging a movement (used when erasing history). */
 function setStockSilently(state, locationId, variantId, delta) {
+  if (isServiceLine(variantId)) return state
   const key = inventoryKey(locationId, variantId)
   const current = state.inventory[key]?.quantity ?? 0
   return {

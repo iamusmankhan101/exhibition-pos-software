@@ -20,6 +20,7 @@ const SECTIONS = [
     label: 'Catalogue',
     items: [
       { to: '/admin/products', label: 'Products', icon: 'products', permission: 'admin.products', count: 'products' },
+      { to: '/admin/stitching', label: 'Stitching', icon: 'scissors', permission: 'admin.products' },
       { to: '/admin/inventory', label: 'Inventory', icon: 'inventory', permission: 'admin.inventory', count: 'lowStock' },
       { to: '/admin/exhibitions', label: 'Exhibitions', icon: 'exhibitions', permission: 'admin.exhibitions' },
     ],

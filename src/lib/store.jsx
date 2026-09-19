@@ -16,6 +16,7 @@ import {
   deleteOrders,
   deleteProducts,
   getStock,
+  isServiceLine,
   orderPaymentParts,
   refundOrder,
   releasePromoUse,
@@ -1836,6 +1837,7 @@ export function AppProvider({ children }) {
 
         // Low-stock and large-discount notifications.
         for (const item of payload.items) {
+          if (isServiceLine(item.variantId)) continue
           const remaining = getStock(next, payload.exhibitionId, item.variantId)
           const found = next.products
             .flatMap((product) => product.variants)
@@ -2386,6 +2388,21 @@ export function AppProvider({ children }) {
           devices: (current.devices || []).filter((entry) => entry.id !== targetId),
         }))
         toast('Device removed from the list', 'warn')
+      },
+
+      /* stitching */
+      saveStitching(options, message = 'Stitching prices saved') {
+        setState((current) => {
+          const draft = withAudit(
+            { ...current, settings: { ...current.settings, stitching: options } },
+            'Updated stitching prices',
+            '',
+            'settings',
+            'stitching',
+          )
+          return withOutbox(draft, 'settings.save', uid('set'), {})
+        })
+        toast(message, 'success')
       },
 
       /* settings */

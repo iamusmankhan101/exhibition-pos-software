@@ -511,3 +511,29 @@ describe('offline replay', () => {
     expect(a.order.invoiceNo).not.toBe(b.order.invoiceNo)
   })
 })
+
+/* ----------------------------------------------------------- stitching */
+
+describe('stitching lines', () => {
+  const stitch = line({ variantId: 'svc_stc1', name: 'Stitching – Shirt', sku: '', quantity: 1, unitPrice: 1500, listPrice: 1500 })
+
+  it('sells with no stock and charges for it', () => {
+    const { state, order } = sell(baseState(), { items: [line(), stitch] })
+    expect(order.total).toBe(160 + 1500)
+    expect(getStock(state, 'ex1', 'v1')).toBe(8)
+    expect(state.inventory['ex1:svc_stc1']).toBeUndefined()
+    expect(state.movements.every((movement) => movement.variantId !== 'svc_stc1')).toBe(true)
+  })
+
+  it('refunds and deletes without inventing stock', () => {
+    const { state, order } = sell(baseState(), { items: [stitch] })
+    const refunded = refundOrder(state, {
+      orderId: order.id,
+      lines: [{ variantId: 'svc_stc1', quantity: 1 }],
+      refundMethod: 'Cash',
+    })
+    expect(refunded.state.inventory['ex1:svc_stc1']).toBeUndefined()
+    const deleted = deleteOrders(state, { orderIds: [order.id] })
+    expect(deleted.inventory?.['ex1:svc_stc1'] ?? deleted.state?.inventory['ex1:svc_stc1']).toBeUndefined()
+  })
+})
