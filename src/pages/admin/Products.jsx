@@ -207,7 +207,11 @@ export default function Products() {
                     )}
                     <td>
                       <div className="row">
-                        <Thumb src={product.image} name={product.name} style={{ width: 38, height: 38 }} />
+                        <Thumb
+                          src={product.image}
+                          name={product.name}
+                          style={{ width: 72, height: 72, borderRadius: 12, fontSize: 18 }}
+                        />
                         <div>
                           <div style={{ fontWeight: 620 }}>{product.name}</div>
                           <div className="small muted">
