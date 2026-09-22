@@ -10,7 +10,7 @@ import Icon from '../../components/Icon.jsx'
 import { money, uid } from '../../lib/format.js'
 import { SERVICE_PREFIX } from '../../lib/domain.js'
 
-const blank = () => ({ id: uid('stc'), name: '', price: '', note: '' })
+const blank = () => ({ id: uid('stc'), name: '', price: '', note: '', details: '' })
 
 export default function Stitching() {
   const { state, actions } = useApp()
@@ -98,6 +98,7 @@ export default function Stitching() {
                       <div>
                         <div style={{ fontWeight: 620 }}>{option.name}</div>
                         {option.note && <div className="small muted">{option.note}</div>}
+                        {option.details && <div className="small muted">{option.details}</div>}
                       </div>
                     </div>
                   </td>
@@ -159,7 +160,13 @@ function StitchingEditor({ option, isNew, names, onClose, onSave, onDelete }) {
     if (!name) return setError('Give the garment a name, e.g. Shirt.')
     if (names.includes(name.toLowerCase())) return setError(`${name} already has a price.`)
     if (!Number.isFinite(price) || price < 0 || draft.price === '') return setError('Enter a price of 0 or more.')
-    return onSave({ ...draft, name, price: money(price), note: (draft.note || '').trim() })
+    return onSave({
+      ...draft,
+      name,
+      price: money(price),
+      note: (draft.note || '').trim(),
+      details: (draft.details || '').trim(),
+    })
   }
 
   return (
@@ -210,6 +217,14 @@ function StitchingEditor({ option, isNew, names, onClose, onSave, onDelete }) {
       </Field>
       <Field label="Note" hint="Optional — shown under the name, e.g. “with lining”.">
         <input className="input" value={draft.note || ''} onChange={(event) => patch({ note: event.target.value })} />
+      </Field>
+      <Field label="Details" hint="Optional — longer description, e.g. fabric, fit or measurement guidance.">
+        <textarea
+          className="input"
+          rows={3}
+          value={draft.details || ''}
+          onChange={(event) => patch({ details: event.target.value })}
+        />
       </Field>
     </Modal>
   )
