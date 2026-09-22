@@ -119,12 +119,12 @@ export function drawInvoice(data, pen, logo) {
 
   pen.text('INVOICE', LEFT, 28.4, { size: 55, serif: true, spacing: 0.5 })
 
-  pen.text(`Issued: ${issuedDate(data.createdAt)}`, 19, 37.5, { size: 10 })
+  pen.text(`Issued: ${issuedDate(data.createdAt)}`, 16.5, 37.5, { size: 10 })
   const reference = [data.invoiceNo ? `No. ${data.invoiceNo}` : '', data.status && data.status !== 'Completed' ? String(data.status).toUpperCase() : '']
     .filter(Boolean)
     .join('   ·   ')
   if (reference) {
-    pen.text(reference, 19, 42, {
+    pen.text(reference, 16.5, 42, {
       size: 8,
       color: data.status && data.status !== 'Completed' ? RED : MUTED,
     })
