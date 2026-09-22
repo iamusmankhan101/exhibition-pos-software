@@ -402,12 +402,20 @@ export default function POS() {
               <Icon name="scan" size={16} />
               Scan
             </button>
-            {(state.settings.stitching || []).length > 0 && (
-              <button type="button" className="btn" onClick={() => setStitchOpen(true)}>
-                <Icon name="scissors" size={16} />
-                Stitching
-              </button>
-            )}
+            <button
+              type="button"
+              className="btn"
+              disabled={(state.settings.stitching || []).length === 0}
+              title={
+                (state.settings.stitching || []).length === 0
+                  ? 'No stitching prices set up yet — add some in Admin → Stitching'
+                  : undefined
+              }
+              onClick={() => setStitchOpen(true)}
+            >
+              <Icon name="scissors" size={16} />
+              Stitching
+            </button>
             <input
               className="input"
               placeholder="Search name, SKU or barcode"
