@@ -241,9 +241,10 @@ export default function Activity() {
             <div className="card" style={{ padding: 14 }}>
               <div style={{ fontWeight: 620, fontSize: 13.5 }}>Push everything to the cloud</div>
               <div className="small muted" style={{ marginTop: 4 }}>
-                The queue above only carries changes made since this device was connected to the backend. Anything
-                recorded before that is still on this till and has never been sent, which is why a phone signing in
-                elsewhere can come up empty. This sends the whole dataset up. It only adds and overwrites, so it is
+                Runs by itself once: the first time this till finds a server, everything it recorded before the
+                backend existed goes up. This button is the manual re-run — after a restore, or on a device set up
+                before that was automatic. The queue above only carries changes made since this device connected, so
+                without that upload a phone signing in elsewhere comes up empty. It only adds and overwrites, so it is
                 safe to run more than once and cannot delete a sale another till has already sent.
               </div>
               <div className="row wrap" style={{ gap: 10, marginTop: 12, alignItems: 'center' }}>

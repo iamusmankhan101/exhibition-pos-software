@@ -13,12 +13,56 @@
 
 const listeners = new Set()
 
+/**
+ * Whether this device is holding work that never reached a server.
+ *
+ * The local adapter reports success without sending anything, so a change made
+ * before the backend existed is marked `synced` and is never eligible to be
+ * pushed again — the queue says it went, and the server has never heard of it.
+ * Nothing else remembers that fact: pushed entries are pruned out of the outbox,
+ * and it cannot live in the state either, because state syncs and "this till once
+ * had nowhere to upload to" says nothing about any other till. So it is a
+ * per-device marker, and `store.jsx` reads it to upload the backlog by itself
+ * rather than waiting for somebody to find the button.
+ */
+const BACKFILL_KEY = 'tareez.needsBackfill'
+
+/** Browsers without storage — private mode, or Node under test — get a no-op. */
+const box = () => (typeof localStorage === 'undefined' ? null : localStorage)
+
+export function markNeedsBackfill() {
+  try {
+    const storage = box()
+    if (storage && storage.getItem(BACKFILL_KEY) !== '1') storage.setItem(BACKFILL_KEY, '1')
+  } catch {
+    /* nowhere to note it down; the manual push still works */
+  }
+}
+
+export const needsBackfill = () => {
+  try {
+    return box()?.getItem(BACKFILL_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function clearNeedsBackfill() {
+  try {
+    box()?.removeItem(BACKFILL_KEY)
+  } catch {
+    /* nothing was set, or nowhere to unset it */
+  }
+}
+
 export const localAdapter = {
   name: 'local',
   async push(entry) {
     // Simulated round-trip. A real adapter would POST `entry` to the API and
     // let the server reject anything whose clientId it has already stored.
     await new Promise((resolve) => setTimeout(resolve, 120))
+    // Nothing left this device, so whatever it covers is owed an upload later.
+    markNeedsBackfill()
     return { ok: true, clientId: entry.clientId, syncedAt: new Date().toISOString() }
   },
 }

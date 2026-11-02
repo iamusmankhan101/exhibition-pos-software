@@ -25,7 +25,7 @@ import {
 } from './domain.js'
 import { DEFAULT_SETTINGS, buildSeedState, isDemoDataset } from './seed.js'
 import { hasUnsentIdentity, mergeCloud } from './merge.js'
-import { drainOutbox, setSyncAdapter } from './sync.js'
+import { clearNeedsBackfill, drainOutbox, needsBackfill, setSyncAdapter } from './sync.js'
 import { isConfigured as supabaseConfigured } from './supabase.js'
 import {
   claimAdmin,
@@ -2299,6 +2299,11 @@ export function AppProvider({ children }) {
        * pending, so nothing retries them — this is the only way they reach the
        * server, and therefore the only way a second device ever sees them.
        *
+       * Normally nobody calls it: the backfill effect below runs it once, by
+       * itself, as soon as this device first has somewhere to send to. This is
+       * the manual re-run — after a restore, or on a device set up before that
+       * was automatic.
+       *
        * Run from the till that holds the data, which is the one the catalogue
        * was built on. It is additive and idempotent, so running it twice is
        * harmless and running it from a device with less data cannot delete what
@@ -2311,6 +2316,9 @@ export function AppProvider({ children }) {
         }
         if (!navigator.onLine) throw new Error('You need to be online to push to the cloud.')
         const summary = await pushEverything(stateRef.current, onProgress)
+        // Either way the backlog is up now, so the automatic pass has nothing
+        // left to do — including when it was a person who pressed the button.
+        clearNeedsBackfill()
         setState((current) =>
           withAudit(
             current,
@@ -2481,6 +2489,57 @@ export function AppProvider({ children }) {
     refreshIdentity,
     pullFromCloud,
   ])
+
+  /* --------------------------------------------------- automatic backfill */
+
+  /**
+   * Uploads this till's backlog on its own, the first time it has a server.
+   *
+   * `pushAll` used to be reachable only from the Activity screen, which made the
+   * recovery path for a catalogue built before the backend existed a button
+   * nobody looked for: the queue drained, the badge went green, and the old data
+   * stayed on the device while every other till saw none of it. Nothing retries
+   * a record the queue already believes it sent, so the green badge was the
+   * whole of the evidence.
+   *
+   * Pulling first is not a courtesy, and it is not skipped on failure. The push
+   * writes this device's copy of every row, so a product that is stale here and
+   * newer on another till would be stamped back over it; reconciling first means
+   * what goes up is the newest copy of anything either side has. A pull that
+   * could not complete therefore holds the whole pass back rather than uploading
+   * blind.
+   *
+   * Waits for the queue to empty rather than racing it, because those entries are
+   * the same records in smaller pieces and they go up by themselves within
+   * seconds. A failure leaves the marker set, so the next boot — or the next
+   * time the connection comes back — tries again.
+   */
+  const backfillInFlight = useRef(false)
+  const backfillWarned = useRef(false)
+
+  useEffect(() => {
+    if (!ready || !supabaseConfigured || !session.userId || cloudAuth !== 'active') return
+    if (!online || backfillInFlight.current || !needsBackfill()) return
+    if ((stateRef.current?.outbox || []).some((entry) => entry.status === 'pending')) return
+
+    backfillInFlight.current = true
+    void (async () => {
+      try {
+        await pullFromCloud()
+        const summary = await actions.pushAll()
+        toast(`Sent ${summary.total} record(s) this till had never uploaded`, 'success')
+      } catch {
+        backfillInFlight.current = false
+        // Once only: this effect re-runs whenever the queue drains, and a device
+        // that cannot reach the server needs telling, not an alarm every few
+        // seconds. The Activity screen still has the button and its reason.
+        if (!backfillWarned.current) {
+          backfillWarned.current = true
+          toast('Older data on this till could not be uploaded — use Push all data on the Activity screen', 'warn')
+        }
+      }
+    })()
+  }, [ready, online, syncing, session.userId, cloudAuth, pullFromCloud, actions, toast])
 
   const value = useMemo(
     () => ({
