@@ -48,7 +48,11 @@ beforeEach(() => {
     },
   }
 
-  globalThis.navigator = globalThis.navigator || {}
+  try {
+    globalThis.navigator = globalThis.navigator || {}
+  } catch {
+    // In Node 21+, globalThis.navigator is a getter-only property
+  }
 
   // A data URL never actually decodes here, so the load is resolved by hand.
   globalThis.Image = class {

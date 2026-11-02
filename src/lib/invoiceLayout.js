@@ -119,8 +119,14 @@ export function drawInvoice(data, pen, logo) {
 
   pen.text('INVOICE', LEFT, 28.4, { size: 55, serif: true, spacing: 0.5 })
 
-  pen.text(`Issued: ${issuedDate(data.createdAt)}`, 16.5, 37.5, { size: 10 })
-  const reference = [data.invoiceNo ? `No. ${data.invoiceNo}` : '', data.status && data.status !== 'Completed' ? String(data.status).toUpperCase() : '']
+  pen.text(`Issued: ${issuedDate(data.createdAt)}${data.dueDate ? `   ·   Due: ${issuedDate(data.dueDate)}` : ''}`, 16.5, 37.5, { size: 10 })
+  const reference = [
+    data.invoiceNo ? `No. ${data.invoiceNo}` : '',
+    data.status && data.status !== 'Completed' ? String(data.status).toUpperCase() : '',
+    // Only a service invoice is asked to show its tax or trade number; the stall
+    // has always gone without, and reprinting it now would restamp old invoices.
+    data.showVat && business.vatNumber ? `VAT ${business.vatNumber}` : '',
+  ]
     .filter(Boolean)
     .join('   ·   ')
   if (reference) {
@@ -130,16 +136,25 @@ export function drawInvoice(data, pen, logo) {
     })
   }
 
+  // A named contact at the client is the one thing a service invoice says that a
+  // stall receipt never does, and it needs a line of its own. Everything below
+  // it gives way by exactly that much, and only when it is present — the stall's
+  // layout is untouched.
+  const contact = data.clientContact ? String(data.clientContact) : ''
+  const shift = contact ? 4.4 : 0
+
   pen.text('BILL TO:', 16.5, 48.4, { size: 10, bold: true })
   pen.text(String(data.customerName || 'Walk-in Customer').toUpperCase(), 16.5, 53.9, { size: 10.5 })
+  if (contact) pen.text(contact, 16.5, 58.3, { size: 9, color: MUTED })
 
-  pen.text('FROM:', 16.5, 60.2, { size: 10, bold: true })
+  pen.text('FROM:', 16.5, 60.2 + shift, { size: 10, bold: true })
   const from = [
     business.legalName || business.name,
+    ...(data.showTagline && business.tagline ? [business.tagline] : []),
     ...wrap(pen, business.address, 78, { size: 9 }).slice(0, 2),
     business.phone,
   ].filter(Boolean)
-  let y = 60.2
+  let y = 60.2 + shift
   for (const line of from) {
     y += 4.65
     pen.text(line, 16.5, y, { size: 9 })

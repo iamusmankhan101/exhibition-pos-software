@@ -12,6 +12,7 @@ import Dashboard from './pages/admin/Dashboard.jsx'
 import Sales from './pages/admin/Sales.jsx'
 import Products from './pages/admin/Products.jsx'
 import Stitching from './pages/admin/Stitching.jsx'
+import TareezTech from './pages/admin/TareezTech.jsx'
 import Inventory from './pages/admin/Inventory.jsx'
 import Exhibitions from './pages/admin/Exhibitions.jsx'
 import Customers from './pages/admin/Customers.jsx'
@@ -118,6 +119,14 @@ function Shell() {
             element={
               <Guard permission="admin.products">
                 <Stitching />
+              </Guard>
+            }
+          />
+          <Route
+            path="tareez-tech"
+            element={
+              <Guard permission="admin.products">
+                <TareezTech />
               </Guard>
             }
           />

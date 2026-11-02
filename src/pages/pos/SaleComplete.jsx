@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { useApp, useCurrency } from '../../lib/store.jsx'
 import { Field, Modal } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
-import { money } from '../../lib/format.js'
+import { buildInvoiceData } from '../../lib/invoiceData.js'
 import { loadChunk } from '../../lib/chunk.js'
 import { buildReceiptImage, copyReceiptImage, saveReceiptImage } from '../../lib/receiptImage.js'
 import {
@@ -18,10 +18,12 @@ import {
   sendWhatsApp,
   shareOrCopy,
 } from '../../lib/receipt.js'
+import { isTechOrder } from '../../lib/domain.js'
 
 export default function SaleComplete({ order, onClose }) {
   const { state, actions, activeExhibition } = useApp()
   const currency = useCurrency()
+  const tech = isTechOrder(order)
   const [qr, setQr] = useState(null)
   const [image, setImage] = useState(null)
   const [showQr, setShowQr] = useState(false)
@@ -37,41 +39,8 @@ export default function SaleComplete({ order, onClose }) {
   )
 
   const pdfData = useMemo(
-    () => ({
-      business: state.settings.business,
-      currencySymbol: state.settings.currencySymbol,
-      currencyCode: state.settings.currency,
-      bank: state.settings.bankDetails,
-      design: state.settings.invoiceDesign,
-      invoiceNo: order.invoiceNo,
-      createdAt: order.createdAt,
-      exhibitionName: activeExhibition?.name || '',
-      salespersonName: order.salespersonName,
-      customerName: order.customerName,
-      customerContact: [customer?.whatsapp || customer?.phone, customer?.email].filter(Boolean).join(' · '),
-      items: order.items.map((item) => ({
-        name: item.name,
-        variant: [item.color, item.size].filter(Boolean).join(' / '),
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        listPrice: item.listPrice || 0,
-      })),
-      subtotal: order.subtotal,
-      discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
-      promoCode: order.promoCode || '',
-      promoAmount: order.promoAmount || 0,
-      paymentParts: order.paymentParts?.length > 1 ? order.paymentParts : [],
-      tax: order.tax,
-      taxRate: state.settings.taxRate,
-      taxInclusive: state.settings.taxInclusive,
-      total: order.total,
-      amountPaid: order.amountPaid,
-      balanceDue: order.balanceDue,
-      status: order.status,
-      paymentMethod: order.paymentMethod,
-      terms: state.settings.terms,
-    }),
-    [order, state.settings, activeExhibition, customer],
+    () => buildInvoiceData(order, state, { exhibitionName: activeExhibition?.name || '', customer }),
+    [order, state, activeExhibition, customer],
   )
   const message = useMemo(() => receiptMessage(order, state.settings, url), [order, state.settings, url])
   // The covering note that travels with an attached PDF — no link, because the
@@ -238,15 +207,15 @@ export default function SaleComplete({ order, onClose }) {
     <Modal
       open
       onClose={onClose}
-      title="Sale complete"
+      title={tech ? 'Invoice issued' : 'Sale complete'}
       subtitle={`${order.invoiceNo} · ${order.paymentMethod}`}
       footer={
         <>
           <Link className="btn" to={`/r/${order.id}`} target="_blank" rel="noopener">
-            View receipt
+            {tech ? 'View invoice' : 'View receipt'}
           </Link>
           <button className="btn btn-primary" onClick={onClose}>
-            New sale
+            {tech ? 'New invoice' : 'New sale'}
           </button>
         </>
       }
@@ -271,8 +240,12 @@ export default function SaleComplete({ order, onClose }) {
           {currency(order.total)}
         </div>
         <div className="small muted">
-          {order.customerName} · {order.items.reduce((sum, item) => sum + item.quantity, 0)} item
-          {order.items.reduce((sum, item) => sum + item.quantity, 0) === 1 ? '' : 's'}
+          {order.customerName} ·{' '}
+          {isTechOrder(order)
+            ? `${order.items.length} service${order.items.length === 1 ? '' : 's'}`
+            : `${order.items.reduce((sum, item) => sum + item.quantity, 0)} item${
+                order.items.reduce((sum, item) => sum + item.quantity, 0) === 1 ? '' : 's'
+              }`}
           {order.discountAmount + (order.lineDiscounts || 0) > 0 &&
             ` · ${currency(order.discountAmount + (order.lineDiscounts || 0))} discount`}
           {order.promoAmount > 0 && ` · ${order.promoCode} −${currency(order.promoAmount)}`}

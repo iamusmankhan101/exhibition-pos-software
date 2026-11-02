@@ -16,9 +16,9 @@ import {
   SERVICE_PREFIX,
   sellingPrice,
 } from '../../lib/domain.js'
-import { formatTime, money, variantLabel } from '../../lib/format.js'
+import { formatTime, money, uid, variantLabel } from '../../lib/format.js'
 import { createWedgeReader } from '../../lib/wedge.js'
-import { Field, Modal, SyncPill, Thumb } from '../../components/ui.jsx'
+import { Confirm, Field, Modal, SyncPill, Thumb } from '../../components/ui.jsx'
 import Icon from '../../components/Icon.jsx'
 import CheckoutModal from './CheckoutModal.jsx'
 import SaleComplete from './SaleComplete.jsx'
@@ -28,15 +28,26 @@ const Scanner = lazy(() => import('../../components/Scanner.jsx'))
 
 const CART_KEY = 'tareez.cart'
 
-function loadCart(exhibitionId) {
+/**
+ * The in-progress sale, and which business it belongs to.
+ *
+ * The mode lives with the cart rather than on its own because the two must
+ * switch together: a tablet that reloads into Tareez Tech has to come back with
+ * the marketing lines still shown as marketing lines, or the sale it restores
+ * would be invoiced under the fashion stall.
+ */
+function loadDraft(exhibitionId) {
   try {
     const stored = JSON.parse(localStorage.getItem(CART_KEY))
-    if (stored?.exhibitionId === exhibitionId) return stored.items || []
+    if (stored?.exhibitionId === exhibitionId) return stored
   } catch {
     /* ignore */
   }
-  return []
+  return {}
 }
+
+const loadCart = (exhibitionId) => loadDraft(exhibitionId).items || []
+const loadTech = (exhibitionId) => loadDraft(exhibitionId).tech === true
 
 export default function POS() {
   const { state, user, activeExhibition, sellLocationId, sellLocationName, actions, can } = useApp()
@@ -44,10 +55,14 @@ export default function POS() {
   const navigate = useNavigate()
 
   const [cart, setCart] = useState(() => loadCart(sellLocationId))
+  const [tech, setTech] = useState(() => loadTech(sellLocationId))
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('All')
   const [scanOpen, setScanOpen] = useState(false)
   const [stitchOpen, setStitchOpen] = useState(false)
+  const [techPick, setTechPick] = useState(null)
+  // Switching businesses empties the cart, so the tablet asks before it does.
+  const [switchPending, setSwitchPending] = useState(null)
   const [variantPick, setVariantPick] = useState(null)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
@@ -70,11 +85,12 @@ export default function POS() {
   // A refreshed tab (or a battery-dead tablet) must not lose an in-progress sale.
   useEffect(() => {
     if (!exhibitionId) return
-    localStorage.setItem(CART_KEY, JSON.stringify({ exhibitionId, items: cart }))
-  }, [cart, exhibitionId])
+    localStorage.setItem(CART_KEY, JSON.stringify({ exhibitionId, items: cart, tech }))
+  }, [cart, tech, exhibitionId])
 
   useEffect(() => {
     setCart(loadCart(exhibitionId))
+    setTech(loadTech(exhibitionId))
   }, [exhibitionId])
 
   /* ------------------------------------------------------------ catalogue */
@@ -99,6 +115,18 @@ export default function POS() {
     ],
     [state.products],
   )
+
+  /*
+   * The Tareez Tech catalogue is a settings list, not products: no variants, no
+   * stock, nothing to scan. The search box narrows it the same way it narrows
+   * the stall, so one input serves both businesses.
+   */
+  const techServices = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    const list = state.settings.techServices || []
+    if (!needle) return list
+    return list.filter((option) => `${option.name} ${option.note || ''}`.toLowerCase().includes(needle))
+  }, [state.settings.techServices, query])
 
   const recentVariantIds = useMemo(() => {
     const ids = []
@@ -224,6 +252,66 @@ export default function POS() {
     actions.toast(`Stitching – ${option.name} added`, 'success')
   }
 
+  /*
+   * A marketing job is priced per engagement, not per unit, so the catalogue
+   * price is only a starting point — the operator confirms or replaces it before
+   * the line goes in.
+   *
+   * The price is part of the line's identity: two jobs of the same service
+   * billed differently are two lines, because one merged line would quietly
+   * apply whichever price was typed first. Described jobs always get their own
+   * line, since "Social media – March" and "Social media – April" are not the
+   * same work however alike their fees are.
+   */
+  const addTechService = (option, { amount, quantity, detail }) => {
+    if (navigator.vibrate) navigator.vibrate(12)
+    const price = money(amount)
+    const described = String(detail || '').trim()
+    const variantId = described
+      ? `${SERVICE_PREFIX}${option.id}:${price}#${uid('svc')}`
+      : `${SERVICE_PREFIX}${option.id}:${price}`
+
+    setCart((current) => {
+      if (current.some((item) => item.variantId === variantId)) {
+        return current.map((item) =>
+          item.variantId === variantId ? { ...item, quantity: item.quantity + quantity } : item,
+        )
+      }
+      return [
+        {
+          productId: null,
+          variantId,
+          name: described ? `${option.name} – ${described}` : option.name,
+          sku: '',
+          category: 'Tareez Tech',
+          size: '',
+          color: '',
+          image: '',
+          service: 'tech',
+          quantity,
+          listPrice: money(option.price),
+          unitPrice: price,
+          lineDiscount: 0,
+        },
+        ...current,
+      ]
+    })
+    actions.toast(`${option.name} added`, 'success')
+  }
+
+  /**
+   * Changing business changes what the cart means, so it never happens under an
+   * operator who already has lines on it.
+   */
+  const requestMode = (next) => {
+    if (next === tech) return
+    if (cart.length === 0) {
+      setTech(next)
+      return
+    }
+    setSwitchPending(next)
+  }
+
   const setQuantity = (variantId, quantity) => {
     if (quantity <= 0) {
       setCart((current) => current.filter((item) => item.variantId !== variantId))
@@ -284,6 +372,13 @@ export default function POS() {
 
   const handleScan = useCallback(
     (code) => {
+      // A barcode belongs to the stall. Adding it to a marketing invoice would
+      // take stock of a dress nobody ordered, so the gun is ignored rather than
+      // quietly reinterpreted.
+      if (tech) {
+        actions.toast('Tareez Tech invoices take services, not scanned products', 'warn')
+        return
+      }
       const match = findByCode(state, code)
       if (!match) {
         actions.toast(`No product matches "${code}"`, 'warn')
@@ -292,7 +387,7 @@ export default function POS() {
       addVariant(match.product, match.variant)
       actions.toast(`${match.product.name} · ${variantLabel(match.variant)} added`, 'success')
     },
-    [state, addVariant, actions],
+    [state, addVariant, actions, tech],
   )
 
   /*
@@ -314,7 +409,16 @@ export default function POS() {
   useEffect(() => {
     // The camera modal is its own scanner, and the rest are modals where adding
     // a line behind the operator's back would be worse than ignoring the scan.
-    const idle = !scanOpen && !stitchOpen && !checkoutOpen && !completed && !variantPick && !discountItem && !oversellRequest
+    const idle =
+      !scanOpen &&
+      !stitchOpen &&
+      !techPick &&
+      !switchPending &&
+      !checkoutOpen &&
+      !completed &&
+      !variantPick &&
+      !discountItem &&
+      !oversellRequest
     if (!idle) return undefined
 
     // Read through a ref rather than depending on `handleScan`, which changes
@@ -325,12 +429,18 @@ export default function POS() {
     const onKeyDown = (event) => reader.handle(event)
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [scanOpen, stitchOpen, checkoutOpen, completed, variantPick, discountItem, oversellRequest])
+  }, [scanOpen, stitchOpen, techPick, switchPending, checkoutOpen, completed, variantPick, discountItem, oversellRequest])
 
   const submitSearch = (event) => {
     event.preventDefault()
     const code = query.trim()
     if (!code) return
+    if (tech) {
+      // There is nothing to match against a barcode here; one service left after
+      // typing is the operator asking for it, so open its price prompt.
+      if (techServices.length === 1) setTechPick(techServices[0])
+      return
+    }
     const match = findByCode(state, code)
     if (match) {
       addVariant(match.product, match.variant)
@@ -397,28 +507,48 @@ export default function POS() {
         </header>
 
         <div className="pos-tools">
-          <form className="search-row" onSubmit={submitSearch}>
-            <button type="button" className="btn btn-primary" onClick={() => setScanOpen(true)}>
-              <Icon name="scan" size={16} />
-              Scan
+          <div className="chips">
+            <button
+              className={`chip ${!tech ? 'active' : ''}`}
+              onClick={() => requestMode(false)}
+              title={`Sell ${state.settings.business.name || 'from the stall'}`}
+            >
+              {state.settings.business.name || 'Tareez'}
             </button>
             <button
-              type="button"
-              className="btn"
-              disabled={(state.settings.stitching || []).length === 0}
-              title={
-                (state.settings.stitching || []).length === 0
-                  ? 'No stitching prices set up yet — add some in Admin → Stitching'
-                  : undefined
-              }
-              onClick={() => setStitchOpen(true)}
+              className={`chip ${tech ? 'active' : ''}`}
+              onClick={() => requestMode(true)}
+              title={`Invoice for ${state.settings.techBusiness?.name || 'Tareez Tech'}`}
             >
-              <Icon name="scissors" size={16} />
-              Stitching
+              {state.settings.techBusiness?.name || 'Tareez Tech'}
             </button>
+          </div>
+          <form className="search-row" onSubmit={submitSearch}>
+            {!tech && (
+              <>
+                <button type="button" className="btn btn-primary" onClick={() => setScanOpen(true)}>
+                  <Icon name="scan" size={16} />
+                  Scan
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={(state.settings.stitching || []).length === 0}
+                  title={
+                    (state.settings.stitching || []).length === 0
+                      ? 'No stitching prices set up yet — add some in Admin → Stitching'
+                      : undefined
+                  }
+                  onClick={() => setStitchOpen(true)}
+                >
+                  <Icon name="scissors" size={16} />
+                  Stitching
+                </button>
+              </>
+            )}
             <input
               className="input"
-              placeholder="Search name, SKU or barcode"
+              placeholder={tech ? 'Search services' : 'Search name, SKU or barcode'}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               autoComplete="off"
@@ -430,81 +560,102 @@ export default function POS() {
               </button>
             )}
           </form>
-          <div className="chips">
-            {recentVariantIds.length > 0 && (
-              <button
-                className={`chip ${category === 'Recent' ? 'active' : ''}`}
-                onClick={() => setCategory('Recent')}
-              >
-                ★ Recent
-              </button>
-            )}
-            {categories.map((name) => (
-              <button
-                key={name}
-                className={`chip ${category === name ? 'active' : ''}`}
-                onClick={() => setCategory(name)}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
+          {!tech && (
+            <div className="chips">
+              {recentVariantIds.length > 0 && (
+                <button
+                  className={`chip ${category === 'Recent' ? 'active' : ''}`}
+                  onClick={() => setCategory('Recent')}
+                >
+                  ★ Recent
+                </button>
+              )}
+              {categories.map((name) => (
+                <button
+                  key={name}
+                  className={`chip ${category === name ? 'active' : ''}`}
+                  onClick={() => setCategory(name)}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="product-scroll">
           <div className="product-grid">
-            {products.map((product) => {
-              const out = product.totalStock <= 0 && !state.settings.allowOverselling
-              // An out-of-stock line stays tappable for anyone who could authorise
-              // selling it anyway — the modal is where that decision gets made.
-              const blocked = out && !can('stock.oversell') && !oversellApproval
-              return (
-                <button
-                  key={product.id}
-                  className={`product-card ${blocked ? 'disabled' : ''}`}
-                  onClick={() => !blocked && handleProductTap(product)}
-                  disabled={blocked}
-                >
-                  <Thumb src={product.image} name={product.name} className="product-thumb">
-                    <span className="stock-pill">{out ? 'Out' : product.totalStock}</span>
-                  </Thumb>
-                  <div className="product-body">
-                    <div className="product-name">{product.name}</div>
-                    <div className="product-meta">
-                      {product.category} · {product.variants.length} option
-                      {product.variants.length > 1 ? 's' : ''}
+            {tech
+              ? techServices.map((option) => (
+                  <button key={option.id} className="product-card" onClick={() => setTechPick(option)}>
+                    <Thumb name={option.name} className="product-thumb" />
+                    <div className="product-body">
+                      <div className="product-name">{option.name}</div>
+                      <div className="product-meta">{option.note || 'Service'} · priced per job</div>
+                      <div className="product-price">
+                        {option.price > 0 ? currency(option.price) : 'Set a fee'}
+                      </div>
                     </div>
-                    <div className="product-price">
-                      {currency(product.minPrice)}
-                      {product.variants.length > 1 &&
-                        Math.max(...product.variants.map((v) => v.sellPrice)) !== product.minPrice && (
-                          <span className="small muted"> +</span>
+                  </button>
+                ))
+              : products.map((product) => {
+                const out = product.totalStock <= 0 && !state.settings.allowOverselling
+                // An out-of-stock line stays tappable for anyone who could authorise
+                // selling it anyway — the modal is where that decision gets made.
+                const blocked = out && !can('stock.oversell') && !oversellApproval
+                return (
+                  <button
+                    key={product.id}
+                    className={`product-card ${blocked ? 'disabled' : ''}`}
+                    onClick={() => !blocked && handleProductTap(product)}
+                    disabled={blocked}
+                  >
+                    <Thumb src={product.image} name={product.name} className="product-thumb">
+                      <span className="stock-pill">{out ? 'Out' : product.totalStock}</span>
+                    </Thumb>
+                    <div className="product-body">
+                      <div className="product-name">{product.name}</div>
+                      <div className="product-meta">
+                        {product.category} · {product.variants.length} option
+                        {product.variants.length > 1 ? 's' : ''}
+                      </div>
+                      <div className="product-price">
+                        {currency(product.minPrice)}
+                        {product.variants.length > 1 &&
+                          Math.max(...product.variants.map((v) => v.sellPrice)) !== product.minPrice && (
+                            <span className="small muted"> +</span>
+                          )}
+                        {product.listPrice > product.minPrice && (
+                          <span
+                            className="small muted"
+                            style={{ textDecoration: 'line-through', marginLeft: 6, fontWeight: 500 }}
+                          >
+                            {currency(product.listPrice)}
+                          </span>
                         )}
-                      {product.listPrice > product.minPrice && (
-                        <span
-                          className="small muted"
-                          style={{ textDecoration: 'line-through', marginLeft: 6, fontWeight: 500 }}
-                        >
-                          {currency(product.listPrice)}
-                        </span>
+                      </div>
+                      {out ? (
+                        <div className="small" style={{ color: 'var(--danger)' }}>
+                          Out of stock
+                        </div>
+                      ) : (
+                        product.totalStock <= state.settings.lowStockThreshold && (
+                          <div className="small" style={{ color: 'var(--warn)' }}>
+                            Low stock
+                          </div>
+                        )
                       )}
                     </div>
-                    {out ? (
-                      <div className="small" style={{ color: 'var(--danger)' }}>
-                        Out of stock
-                      </div>
-                    ) : (
-                      product.totalStock <= state.settings.lowStockThreshold && (
-                        <div className="small" style={{ color: 'var(--warn)' }}>
-                          Low stock
-                        </div>
-                      )
-                    )}
-                  </div>
-                </button>
-              )
-            })}
-            {products.length === 0 && (
+                  </button>
+                )
+              })}
+            {tech && techServices.length === 0 && (
+              <div className="empty" style={{ gridColumn: '1 / -1' }}>
+                <h3>No services to invoice yet</h3>
+                <p>Add what {state.settings.techBusiness?.name || 'Tareez Tech'} sells in Admin → Tareez Tech.</p>
+              </div>
+            )}
+            {!tech && products.length === 0 && (
               <div className="empty" style={{ gridColumn: '1 / -1' }}>
                 <h3>Nothing found</h3>
                 <p>Try another search term, or scan the product label.</p>
@@ -518,9 +669,11 @@ export default function POS() {
       <aside className={`cart ${cartOpen ? 'open' : ''}`}>
         <div className="cart-head row-between">
           <div>
-            <div style={{ fontWeight: 680 }}>Current sale</div>
+            <div style={{ fontWeight: 680 }}>{tech ? 'Current invoice' : 'Current sale'}</div>
             <div className="small muted">
-              {totals.itemCount} item{totals.itemCount === 1 ? '' : 's'}
+              {tech
+                ? `${cart.length} service${cart.length === 1 ? '' : 's'}`
+                : `${totals.itemCount} item${totals.itemCount === 1 ? '' : 's'}`}
             </div>
           </div>
           <div className="row">
@@ -539,7 +692,7 @@ export default function POS() {
           {cart.length === 0 && (
             <div className="empty" style={{ marginTop: 20 }}>
               <h3>Cart is empty</h3>
-              <p>Scan a label or tap a product to begin.</p>
+              <p>{tech ? 'Tap a service to price it and start the invoice.' : 'Scan a label or tap a product to begin.'}</p>
             </div>
           )}
           {cart.map((item) => {
@@ -549,7 +702,7 @@ export default function POS() {
               <div key={item.variantId} className="cart-item">
                 {isServiceLine(item.variantId) ? (
                   <div className="cart-thumb" style={{ background: 'var(--surface-2)', color: 'var(--brand)' }}>
-                    <Icon name="scissors" size={18} />
+                    <Icon name={item.service === 'tech' ? 'globe' : 'scissors'} size={18} />
                   </div>
                 ) : (
                   <Thumb src={item.image} name={item.name} />
@@ -558,7 +711,9 @@ export default function POS() {
                   <div className="cart-name">{item.name}</div>
                   <div className="cart-var">
                     {isServiceLine(item.variantId)
-                      ? 'Stitching service'
+                      ? item.service === 'tech'
+                        ? 'Service · priced per job'
+                        : 'Stitching service'
                       : [item.color, item.size, item.sku].filter(Boolean).join(' · ')}
                   </div>
                   <div className="row-between" style={{ marginTop: 7 }}>
@@ -642,7 +797,7 @@ export default function POS() {
             disabled={cart.length === 0}
             onClick={() => setCheckoutOpen(true)}
           >
-            Proceed to payment
+            {tech ? 'Proceed to billing' : 'Proceed to payment'}
           </button>
         </div>
       </aside>
@@ -713,6 +868,34 @@ export default function POS() {
         </div>
       </Modal>
 
+      <TechServiceModal
+        option={techPick}
+        onClose={() => setTechPick(null)}
+        onAdd={(detail) => {
+          addTechService(techPick, detail)
+          setTechPick(null)
+        }}
+      />
+
+      <Confirm
+        open={Boolean(switchPending)}
+        title={switchPending ? `Switch to ${switchPending ? state.settings.techBusiness?.name || 'Tareez Tech' : state.settings.business.name || 'Tareez'}` : ''}
+        message={
+          switchPending
+            ? `This cart holds ${cart.length} line${cart.length === 1 ? '' : 's'} for the other business. Clearing it cannot be undone.`
+            : ''
+        }
+        confirmLabel="Clear and switch"
+        danger
+        onConfirm={() => {
+          setCart([])
+          setOversellApproval(null)
+          setTech(switchPending)
+          setSwitchPending(null)
+        }}
+        onClose={() => setSwitchPending(null)}
+      />
+
       <VariantPicker
         product={variantPick}
         onClose={() => setVariantPick(null)}
@@ -725,6 +908,7 @@ export default function POS() {
       {checkoutOpen && (
         <CheckoutModal
           cart={cart}
+          tech={tech}
           oversellApproval={oversellApproval}
           onClose={() => setCheckoutOpen(false)}
           onComplete={onSaleComplete}
@@ -879,6 +1063,89 @@ function OversellModal({ request, onClose, onApprove }) {
           Inventory instead.
         </p>
       )}
+    </Modal>
+  )
+}
+
+/**
+ * A marketing job, priced as it was agreed.
+ *
+ * The catalogue fee is a starting point, not a quote: websites and retainers are
+ * sold per engagement, so the amount is confirmed every time instead of silently
+ * inheriting a figure that may belong to another client.
+ */
+function TechServiceModal({ option, onClose, onAdd }) {
+  const currency = useCurrency()
+  const [amount, setAmount] = useState('')
+  const [quantity, setQuantity] = useState('1')
+  const [detail, setDetail] = useState('')
+
+  useEffect(() => {
+    if (!option) return
+    setAmount(option.price > 0 ? String(option.price) : '')
+    setQuantity('1')
+    setDetail('')
+  }, [option])
+
+  if (!option) return null
+
+  const fee = Number(amount)
+  const count = Math.max(1, Math.round(Number(quantity) || 1))
+  const valid = amount.trim() !== '' && Number.isFinite(fee) && fee >= 0
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={option.name}
+      subtitle={option.note || 'Add the fee agreed for this job'}
+      footer={
+        <button
+          className="btn btn-primary"
+          disabled={!valid}
+          onClick={() => onAdd({ amount: fee, quantity: count, detail })}
+        >
+          Add {currency(money(fee * count))}
+        </button>
+      }
+    >
+      <div className="stack" style={{ display: 'grid', gap: 12 }}>
+        <Field
+          label="Fee for this job"
+          hint={option.price > 0 ? `Listed at ${currency(option.price)} — change it if this job differs` : undefined}
+        >
+          <input
+            className="input mono"
+            type="number"
+            min="0"
+            step="0.01"
+            autoFocus
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            placeholder="0"
+          />
+        </Field>
+        <Field label="How many" hint="Months or units of this service on the invoice">
+          <input
+            className="input mono"
+            type="number"
+            min="1"
+            step="1"
+            inputMode="numeric"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </Field>
+        <Field label="Which job" hint="Optional. Written next to the service name on the invoice">
+          <input
+            className="input"
+            maxLength={60}
+            value={detail}
+            onChange={(event) => setDetail(event.target.value)}
+            placeholder="e.g. Store redesign — March"
+          />
+        </Field>
+      </div>
     </Modal>
   )
 }

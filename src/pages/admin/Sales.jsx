@@ -6,7 +6,7 @@ import Icon from '../../components/Icon.jsx'
 import { BulkBar, RowBox, SelectAllBox, useSelection } from '../../components/Selection.jsx'
 import { formatDate, money } from '../../lib/format.js'
 import { filterOrders, salesSummary } from '../../lib/analytics.js'
-import { isSplitPayment, locationName, orderPaymentParts } from '../../lib/domain.js'
+import { isServiceLine, isSplitPayment, isTechOrder, locationName, orderPaymentParts } from '../../lib/domain.js'
 import { exportCsv, exportExcel, exportPdf } from '../../lib/csv.js'
 
 export default function Sales() {
@@ -17,6 +17,7 @@ export default function Sales() {
 
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('All')
+  const [business, setBusiness] = useState('All')
   const [scope, setScope] = useState('exhibition')
   const [salesperson, setSalesperson] = useState('All')
   const [from, setFrom] = useState('')
@@ -35,6 +36,7 @@ export default function Sales() {
       from: from || undefined,
       to: to || undefined,
       salespersonId: ownOnly ? user.id : salesperson === 'All' ? undefined : salesperson,
+      business: business === 'All' ? undefined : business,
     })
     const needle = query.trim().toLowerCase()
     return base.filter((order) => {
@@ -44,10 +46,12 @@ export default function Sales() {
         order.invoiceNo.toLowerCase().includes(needle) ||
         order.customerName.toLowerCase().includes(needle) ||
         order.salespersonName.toLowerCase().includes(needle) ||
-        order.items.some((item) => item.name.toLowerCase().includes(needle) || item.sku.toLowerCase().includes(needle))
+        order.items.some(
+          (item) => item.name.toLowerCase().includes(needle) || String(item.sku || '').toLowerCase().includes(needle),
+        )
       )
     })
-  }, [state, scope, sellLocationId, from, to, salesperson, ownOnly, user.id, status, query])
+  }, [state, scope, sellLocationId, from, to, business, salesperson, ownOnly, user.id, status, query])
 
   const summary = useMemo(() => salesSummary(orders), [orders])
 
@@ -139,6 +143,11 @@ export default function Sales() {
               <option key={value}>{value}</option>
             ))}
           </select>
+          <select className="select" style={{ width: 170 }} value={business} onChange={(e) => setBusiness(e.target.value)}>
+            <option value="All">Both businesses</option>
+            <option value="fashion">{state.settings.business.name || 'Tareez'}</option>
+            <option value="tech">{state.settings.techBusiness?.name || 'Tareez Tech'}</option>
+          </select>
           {!ownOnly && (
             <select
               className="select"
@@ -227,7 +236,10 @@ export default function Sales() {
                   )}
                   <td className="mono small">{order.invoiceNo}</td>
                   <td className="small nowrap">{formatDate(order.createdAt, true)}</td>
-                  <td>{order.customerName}</td>
+                  <td>
+                    {order.customerName}
+                    {isTechOrder(order) && <div className="small muted">Tareez Tech invoice</div>}
+                  </td>
                   <td className="small">{order.salespersonName}</td>
                   <td className="right mono">{order.items.reduce((sum, item) => sum + item.quantity, 0)}</td>
                   <td className="right mono">
@@ -311,8 +323,12 @@ export default function Sales() {
 
       <Confirm
         open={Boolean(cancelling)}
-        title="Cancel this sale?"
-        message={`${cancelling?.invoiceNo} will be marked cancelled, the full amount reversed and every item returned to exhibition stock.`}
+        title={cancelling && isTechOrder(cancelling) ? 'Cancel this invoice?' : 'Cancel this sale?'}
+        message={
+          cancelling && isTechOrder(cancelling)
+            ? `${cancelling.invoiceNo} will be marked cancelled and the amount it is owed written off. Nothing was ever taken out of stock.`
+            : `${cancelling?.invoiceNo} will be marked cancelled, the full amount reversed and every item returned to exhibition stock.`
+        }
         confirmLabel="Cancel sale"
         danger
         onConfirm={() => actions.cancelOrder(cancelling.id, 'Cancelled by staff')}
@@ -385,8 +401,12 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete })
 
       <div className="grid grid-2" style={{ gap: 10 }}>
         <div className="card" style={{ background: 'var(--surface-2)', padding: 14 }}>
-          <div className="small muted">Customer</div>
+          <div className="small muted">{isTechOrder(order) ? 'Client' : 'Customer'}</div>
           <div style={{ fontWeight: 620 }}>{order.customerName}</div>
+          {order.clientContact && <div className="small muted">{order.clientContact}</div>}
+          {order.dueDate && (
+            <div className="small" style={{ color: 'var(--warn)' }}>Due {formatDate(order.dueDate)}</div>
+          )}
         </div>
         <div className="card" style={{ background: 'var(--surface-2)', padding: 14 }}>
           <div className="small muted">{isSplitPayment(order) ? 'Paid across' : 'Payment reference'}</div>
@@ -421,7 +441,7 @@ function OrderDetail({ order, onClose, onRefund, onCancel, onSettle, onDelete })
                 <td>
                   {item.name}
                   <div className="small muted">
-                    {[item.color, item.size].filter(Boolean).join(' · ')} · {item.sku}
+                    {[item.color, item.size, item.sku].filter(Boolean).join(' · ') || 'Service'}
                   </div>
                   {item.returnedQuantity > 0 && (
                     <span className="badge badge-warn" style={{ marginTop: 4 }}>
@@ -502,14 +522,20 @@ function DeleteSalesModal({ orders, onClose, onDone }) {
   const [restoreStock, setRestoreStock] = useState(true)
 
   const revenue = orders.reduce((sum, order) => sum + (order.status === 'Cancelled' ? 0 : order.total), 0)
+  // Only stocked lines can go back; a service was never in the count to begin with.
   const units = orders.reduce(
     (sum, order) =>
       sum +
       (order.status === 'Cancelled'
         ? 0
-        : order.items.reduce((n, item) => n + (item.quantity - (item.returnedQuantity || 0)), 0)),
+        : order.items.reduce(
+            (n, item) =>
+              isServiceLine(item.variantId) ? n : n + (item.quantity - (item.returnedQuantity || 0)),
+            0,
+          )),
     0,
   )
+  const stocked = units > 0
 
   return (
     <Modal
@@ -525,7 +551,7 @@ function DeleteSalesModal({ orders, onClose, onDone }) {
           <button
             className="btn btn-danger"
             onClick={() => {
-              actions.deleteOrders(orders.map((order) => order.id), { restoreStock })
+              actions.deleteOrders(orders.map((order) => order.id), { restoreStock: stocked && restoreStock })
               onDone()
             }}
           >
@@ -545,20 +571,22 @@ function DeleteSalesModal({ orders, onClose, onDone }) {
         </ul>
       </div>
 
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={restoreStock}
-          onChange={(event) => setRestoreStock(event.target.checked)}
-        />
-        <span>
-          Return {units} unsold item{units === 1 ? '' : 's'} to exhibition stock
-          <div className="small muted">
-            Leave this on unless the goods really did leave with the customer — otherwise the stock
-            count will be short.
-          </div>
-        </span>
-      </label>
+      {stocked && (
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={restoreStock}
+            onChange={(event) => setRestoreStock(event.target.checked)}
+          />
+          <span>
+            Return {units} unsold item{units === 1 ? '' : 's'} to exhibition stock
+            <div className="small muted">
+              Leave this on unless the goods really did leave with the customer — otherwise the stock
+              count will be short.
+            </div>
+          </span>
+        </label>
+      )}
 
       {orders.length > 1 && (
         <div className="stack-sm" style={{ maxHeight: 190, overflowY: 'auto' }}>
@@ -759,7 +787,7 @@ function RefundModal({ order, onClose }) {
               <div className="cart-info">
                 <div className="cart-name">{item.name}</div>
                 <div className="cart-var">
-                  {[item.color, item.size].filter(Boolean).join(' · ')} · {remaining} returnable
+                  {[item.color, item.size, `${remaining} returnable`].filter(Boolean).join(' · ')}
                 </div>
               </div>
               <div className="qty">

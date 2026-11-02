@@ -36,23 +36,32 @@ export default function Reports() {
   const currency = useCurrency()
   const [tab, setTab] = useState('sales')
   const [exhibitionId, setExhibitionId] = useState(activeExhibition?.id || 'all')
+  const [business, setBusiness] = useState('all')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
 
   const filter = useMemo(
     () => ({
       exhibitionId: exhibitionId === 'all' ? undefined : exhibitionId,
+      business: business === 'all' ? undefined : business,
       from: from || undefined,
       to: to || undefined,
     }),
-    [exhibitionId, from, to],
+    [exhibitionId, business, from, to],
   )
 
   const orders = useMemo(() => filterOrders(state, filter), [state, filter])
   const summary = useMemo(() => salesSummary(orders), [orders])
   const exhibitionName =
     exhibitionId === 'all' ? 'All exhibitions' : state.exhibitions.find((e) => e.id === exhibitionId)?.name || ''
-  const period = `${exhibitionName}${from || to ? ` · ${from || 'start'} → ${to || 'today'}` : ''}`
+  // Named on every export, so a file of one business's takings is not filed
+  // under a heading that says they are both.
+  const businessName =
+    business === 'all'
+      ? ''
+      : (business === 'tech' ? state.settings.techBusiness?.name : state.settings.business.name) ||
+        (business === 'tech' ? 'Tareez Tech' : 'Tareez')
+  const period = `${exhibitionName}${businessName ? ` · ${businessName}` : ''}${from || to ? ` · ${from || 'start'} → ${to || 'today'}` : ''}`
 
   const report = useMemo(() => {
     switch (tab) {
@@ -260,6 +269,16 @@ export default function Reports() {
               {exhibition.name}
             </option>
           ))}
+        </select>
+        <select
+          className="select"
+          style={{ width: 180 }}
+          value={business}
+          onChange={(event) => setBusiness(event.target.value)}
+        >
+          <option value="all">Both businesses</option>
+          <option value="fashion">{state.settings.business.name || 'Tareez'}</option>
+          <option value="tech">{state.settings.techBusiness?.name || 'Tareez Tech'}</option>
         </select>
         <input className="input" style={{ width: 160 }} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         <input className="input" style={{ width: 160 }} type="date" value={to} onChange={(e) => setTo(e.target.value)} />

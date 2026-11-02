@@ -4,6 +4,7 @@ import { MAIN_LOCATION, money } from './format.js'
 import {
   MOVEMENT_TYPES,
   getStock,
+  isTechOrder,
   itemCategory,
   orderPaymentParts,
   sellingPrice,
@@ -17,10 +18,15 @@ export function withinRange(iso, from, to) {
   return true
 }
 
-export function filterOrders(state, { exhibitionId, from, to, salespersonId } = {}) {
+/**
+ * `business` is `'fashion'` or `'tech'` — the two names on the invoices share one
+ * ledger, and a report of either one is asked for on its own more often than not.
+ */
+export function filterOrders(state, { exhibitionId, from, to, salespersonId, business } = {}) {
   return state.orders.filter((order) => {
     if (exhibitionId && order.exhibitionId !== exhibitionId) return false
     if (salespersonId && order.salespersonId !== salespersonId) return false
+    if (business && isTechOrder(order) !== (business === 'tech')) return false
     if (!withinRange(order.createdAt, from, to)) return false
     return true
   })

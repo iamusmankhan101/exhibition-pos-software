@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { useApp } from '../lib/store.jsx'
-import { money } from '../lib/format.js'
+import { buildInvoiceData } from '../lib/invoiceData.js'
 import { decodeReceipt } from '../lib/receipt.js'
 import { buildReceiptImage } from '../lib/receiptImage.js'
 import { loadChunk } from '../lib/chunk.js'
@@ -30,49 +30,23 @@ export default function Receipt() {
   const fromFragment = useMemo(fragmentPayload, [])
 
   const data = useMemo(() => {
-    // The link cannot carry the logo, so a customer's phone draws the bundled one.
-    if (fromFragment) return { ...fromFragment, business: { logo: TAREEZ_LOGO, ...fromFragment.business } }
+    // The link cannot carry a logo, so a customer's phone draws the bundled one —
+    // but only for the stall. Stamping Tareez's logo on a Tareez Tech invoice
+    // would be the wrong company on the customer's copy of their own bill, so a
+    // tech link falls back to the drawn initial instead.
+    if (fromFragment) {
+      if (fromFragment.tech) return fromFragment
+      return { ...fromFragment, business: { logo: TAREEZ_LOGO, ...fromFragment.business } }
+    }
     const state = context.state
     if (!state) return null
     const order = state.orders.find((entry) => entry.id === orderId)
     if (!order) return null
     const exhibition = state.exhibitions.find((entry) => entry.id === order.exhibitionId)
-    const customer = state.customers.find((entry) => entry.id === order.customerId)
-    return {
-      business: state.settings.business,
-      currencySymbol: state.settings.currencySymbol,
-      currencyCode: state.settings.currency,
-      bank: state.settings.bankDetails,
-      design: state.settings.invoiceDesign || {},
-      invoiceNo: order.invoiceNo,
-      createdAt: order.createdAt,
+    return buildInvoiceData(order, state, {
       exhibitionName: exhibition?.name || '',
-      salespersonName: order.salespersonName,
-      customerName: order.customerName,
-      customerContact: [customer?.whatsapp || customer?.phone, customer?.email].filter(Boolean).join(' · '),
-      items: order.items.map((item) => ({
-        name: item.name,
-        variant: [item.color, item.size].filter(Boolean).join(' / '),
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        listPrice: item.listPrice || 0,
-      })),
-      subtotal: order.subtotal,
-      discountAmount: money(order.discountAmount + (order.lineDiscounts || 0)),
-      promoCode: order.promoCode || '',
-      promoAmount: order.promoAmount || 0,
-      paymentParts: order.paymentParts?.length > 1 ? order.paymentParts : [],
-      tax: order.tax,
-      taxInclusive: state.settings.taxInclusive,
-      taxRate: state.settings.taxRate,
-      total: order.total,
-      amountPaid: order.amountPaid,
-      balanceDue: order.balanceDue,
-      paymentMethod: order.paymentMethod,
-      terms: state.settings.terms,
-      footer: state.settings.receiptFooter,
-      status: order.status,
-    }
+      customer: state.customers.find((entry) => entry.id === order.customerId) || null,
+    })
   }, [fromFragment, context.state, orderId])
 
   useEffect(() => {

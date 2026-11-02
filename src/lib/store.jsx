@@ -317,7 +317,9 @@ function migrate(state) {
     returns: state.returns || [],
     devices: state.devices || [],
     tombstones: state.tombstones || {},
-    counters: state.counters || { invoice: 1 },
+    // Both number lines are filled in: a device that predates Tareez Tech has
+    // an `invoice` counter and no idea what `techInvoice` should start at.
+    counters: { invoice: 1, techInvoice: 1, ...(state.counters || {}) },
   }
 }
 
@@ -2407,6 +2409,28 @@ export function AppProvider({ children }) {
             '',
             'settings',
             'stitching',
+          )
+          return withOutbox(draft, 'settings.save', uid('set'), {})
+        })
+        toast(message, 'success')
+      },
+
+      /* tareez tech */
+
+      /**
+       * Any Tareez Tech key in one call — the invoice identity, the services the
+       * till offers, the number prefix or the payment term. They all live inside
+       * the settings blob, so they ride the `settings.save` command that already
+       * carries the rest of it and need no table or handler of their own.
+       */
+      saveTechSettings(patch, message = 'Tareez Tech updated') {
+        setState((current) => {
+          const draft = withAudit(
+            { ...current, settings: { ...current.settings, ...patch } },
+            'Updated Tareez Tech',
+            Object.keys(patch).join(', '),
+            'settings',
+            'tareez-tech',
           )
           return withOutbox(draft, 'settings.save', uid('set'), {})
         })

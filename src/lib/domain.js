@@ -309,11 +309,54 @@ export function discountPercentOf(subtotal, discountAmount) {
 
 /* --------------------------------------------------------------- invoices */
 
-export function nextInvoiceNumber(state, deviceCode = 'A1') {
-  const seq = (state.counters?.invoice ?? 1)
+/**
+ * The order `profile` that bills as Tareez Tech rather than the fashion stall.
+ *
+ * A second business, not a second app: it shares the cart, the totals, the tax
+ * settings and the whole order pipeline, and differs in exactly three ways —
+ * whose name and logo sit at the top of the invoice, which numbered series the
+ * invoice comes from, and that it names a client and a payment deadline rather
+ * than a walk-in shopper.
+ */
+export const TECH_PROFILE = 'tech'
+
+export const isTechOrder = (order) => order?.profile === TECH_PROFILE
+
+/**
+ * Whose identity an invoice carries.
+ *
+ * Read from the order rather than the current settings, because the profile is
+ * stamped when the sale is taken: change the fashion logo tomorrow and last
+ * month's invoices must not silently reprint under it.
+ */
+export function invoiceBusiness(settings, order) {
+  if (!isTechOrder(order)) return settings?.business || {}
+  return settings?.techBusiness || {}
+}
+
+/**
+ * The date the customer is asked to pay by.
+ *
+ * Only ever set for a service invoice — a stall sale is paid at the counter —
+ * so it is absent rather than false, and the layout leaves the line out.
+ */
+export function dueDateFor(issuedAt, days) {
+  const count = Number(days)
+  if (!Number.isFinite(count) || count <= 0) return ''
+  const date = new Date(issuedAt)
+  if (Number.isNaN(date.getTime())) return ''
+  date.setDate(date.getDate() + count)
+  return date.toISOString()
+}
+
+export function nextInvoiceNumber(state, deviceCode = 'A1', profile = null) {
+  const tech = profile === TECH_PROFILE
+  const seq = (tech ? state.counters?.techInvoice : state.counters?.invoice) ?? 1
+  const settings = state.settings || {}
+  const prefix = (tech ? settings.techInvoicePrefix || settings.invoicePrefix : settings.invoicePrefix) || ''
   const date = new Date()
   const stamp = `${String(date.getFullYear()).slice(2)}${pad(date.getMonth() + 1, 2)}${pad(date.getDate(), 2)}`
-  return `${state.settings.invoicePrefix}-${stamp}-${deviceCode}${pad(seq, 3)}`
+  return `${prefix}-${stamp}-${deviceCode}${pad(seq, 3)}`
 }
 
 /* ------------------------------------------------------------- payments */
@@ -393,6 +436,12 @@ export function createOrder(state, payload) {
     // Set by an authorised admin to sell past the recorded stock level.
     overrideOversell = false,
     overrideBy = null,
+    // Tareez Tech: which business is doing the invoicing, who the work is for,
+    // and when they are expected to pay for it.
+    profile = null,
+    clientContact = '',
+    issuedAt = null,
+    dueDate = '',
   } = payload
 
   const existing = state.orders.find((order) => order.clientId === clientId)
@@ -415,7 +464,7 @@ export function createOrder(state, payload) {
   }
 
   const totals = computeTotals(items, discount, state.settings, promo)
-  const invoiceNo = nextInvoiceNumber(state, deviceCode)
+  const invoiceNo = nextInvoiceNumber(state, deviceCode, profile)
 
   // A split breakdown decides what was taken; otherwise fall back to the single
   // method plus the part-payment amount.
@@ -468,10 +517,24 @@ export function createOrder(state, payload) {
         : null,
     refundedAmount: 0,
     createdAt,
+    // Absent on a stall sale; the invoice then falls back to `createdAt`.
+    issuedAt: issuedAt || undefined,
+    // Only a service invoice carries these, and the layout draws the deadline
+    // line when it finds one.
+    ...(profile === TECH_PROFILE
+      ? { profile, clientContact: clientContact || '', dueDate: dueDate || '' }
+      : {}),
   }
 
   let next = { ...state, orders: [order, ...state.orders] }
-  next.counters = { ...next.counters, invoice: (next.counters?.invoice ?? 1) + 1 }
+  // Each business runs its own number line, so a marketing invoice never eats
+  // a hole in the stall's sequence — or the other way round.
+  next.counters = {
+    ...next.counters,
+    ...(profile === TECH_PROFILE
+      ? { techInvoice: (next.counters?.techInvoice ?? 1) + 1 }
+      : { invoice: (next.counters?.invoice ?? 1) + 1 }),
+  }
 
   for (const item of items) {
     next = applyStockChange(next, {

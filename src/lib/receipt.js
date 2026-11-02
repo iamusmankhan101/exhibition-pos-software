@@ -9,6 +9,7 @@
 
 import QRCode from 'qrcode'
 import { formatDate } from './format.js'
+import { invoiceBusiness, isTechOrder } from './domain.js'
 
 const MAX_FRAGMENT = 1800
 
@@ -31,17 +32,26 @@ function fromBase64Url(text) {
 /** Minimal wire format — short keys keep the QR code scannable. */
 export function encodeReceipt(order, settings, exhibitionName, customer) {
   const design = settings.invoiceDesign || {}
+  // The link has to carry whichever company sold it, not whichever one this
+  // device happens to be configured as today — a Tareez Tech invoice shared to a
+  // client must not arrive wearing the fashion stall's name.
+  const tech = isTechOrder(order)
+  const business = invoiceBusiness(settings, order)
   const payload = {
     v: 1,
-    b: settings.business.name,
-    bl: settings.business.legalName,
-    bt: settings.business.tagline,
-    bp: settings.business.phone,
-    be: settings.business.email,
-    ba: settings.business.address,
-    bv: settings.business.vatNumber,
+    b: business.name,
+    bl: business.legalName,
+    bt: business.tagline,
+    bp: business.phone,
+    be: business.email,
+    ba: business.address,
+    bv: business.vatNumber,
     cur: settings.currencySymbol,
     cd: settings.currency,
+    // Only the fields that apply take up bytes in a URL that has a length budget.
+    ...(tech ? { tp: 1 } : {}),
+    ...(order.dueDate ? { dd: order.dueDate } : {}),
+    ...(order.clientContact ? { ct: order.clientContact } : {}),
     // Bank lines only travel when there are any, to keep the link short.
     ...(Object.values(settings.bankDetails || {}).some(Boolean)
       ? {
@@ -54,7 +64,7 @@ export function encodeReceipt(order, settings, exhibitionName, customer) {
         }
       : {}),
     inv: order.invoiceNo,
-    dt: order.createdAt,
+    dt: order.issuedAt || order.createdAt,
     ex: exhibitionName,
     sp: order.salespersonName,
     cu: order.customerName,
@@ -82,7 +92,10 @@ export function encodeReceipt(order, settings, exhibitionName, customer) {
     bd: order.balanceDue,
     st: order.status,
     pm: order.paymentMethod,
-    tc: settings.terms,
+    // The stall's returns policy is not a marketing invoice's terms, and there is
+    // nothing to say in its place, so a tech link carries none rather than the
+    // wrong one.
+    tc: tech ? '' : settings.terms,
     ft: settings.receiptFooter,
     dz: design,
   }
@@ -110,6 +123,13 @@ export function decodeReceipt(encoded) {
         : {},
       invoiceNo: data.inv,
       createdAt: data.dt,
+      dueDate: data.dd || '',
+      clientContact: data.ct || '',
+      // The link says which business raised the invoice, and the layout reads
+      // the tax number and the tagline off that rather than guessing.
+      tech: data.tp === 1,
+      showVat: data.tp === 1,
+      showTagline: data.tp === 1,
       exhibitionName: data.ex,
       salespersonName: data.sp,
       customerName: data.cu,
@@ -158,11 +178,17 @@ export function receiptUrl(order, settings, exhibitionName, customer) {
 export function receiptMessage(order, settings, url) {
   const symbol = settings.currencySymbol
   const total = `${symbol}${Number(order.total).toFixed(2)}`
+  const tech = isTechOrder(order)
   return [
-    `Thank you for shopping with ${settings.business.name}!`,
+    // A client buying a campaign is not a shopper at a stall, and this line is
+    // the first thing they read.
+    tech
+      ? `Your invoice from ${invoiceBusiness(settings, order).name}`
+      : `Thank you for shopping with ${settings.business.name}!`,
     '',
     `Invoice: ${order.invoiceNo}`,
-    `Date: ${formatDate(order.createdAt, true)}`,
+    `Date: ${formatDate(order.issuedAt || order.createdAt, true)}`,
+    ...(tech && order.dueDate ? [`Payment due: ${formatDate(order.dueDate, true)}`] : []),
     `Total: ${total} (${order.paymentMethod})`,
     ...(url ? ['', `View your receipt: ${url}`] : []),
   ].join('\n')

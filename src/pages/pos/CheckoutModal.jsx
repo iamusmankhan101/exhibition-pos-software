@@ -1,23 +1,46 @@
 /**
  * Checkout wizard: Customer → Discount → Payment.
  * Every step has a sensible default so a fast sale is three taps.
+ *
+ * `tech` runs the same wizard for a Tareez Tech service invoice: the client is
+ * named rather than walked in, and the invoice carries issue and due dates.
  */
 
 import { useMemo, useState } from 'react'
 import { useApp, useCurrency } from '../../lib/store.jsx'
-import { computeTotals, validatePromo } from '../../lib/domain.js'
-import { money, uid } from '../../lib/format.js'
+import { computeTotals, dueDateFor, TECH_PROFILE, validatePromo } from '../../lib/domain.js'
+import { money, nowIso, uid } from '../../lib/format.js'
 import { Avatar, Field, Modal } from '../../components/ui.jsx'
 
 const STEPS = ['Customer', 'Discount', 'Payment']
+const TECH_STEPS = ['Client', 'Discount', 'Payment']
 
-export default function CheckoutModal({ cart, oversellApproval, onClose, onComplete }) {
+/**
+ * The day as the till sees it.
+ *
+ * `dayKey` reads the UTC day, which for a tablet east of Greenwich is the day
+ * before the one on its own clock — and an invoice dated a day early is a
+ * document that disagrees with the conversation it came out of.
+ */
+const localDay = (iso) => {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+export default function CheckoutModal({ cart, tech = false, oversellApproval, onClose, onComplete }) {
   const { state, user, sellLocationId, actions, online } = useApp()
   const currency = useCurrency()
+  const steps = tech ? TECH_STEPS : STEPS
 
   const [step, setStep] = useState(0)
   const [customer, setCustomer] = useState(null)
   const [walkIn, setWalkIn] = useState(false)
+  // A marketing job is often invoiced after the work, so both dates are editable
+  // rather than fixed to the clock on the tablet.
+  const [issuedAt, setIssuedAt] = useState(() => nowIso())
+  const [dueDate, setDueDate] = useState(() => dueDateFor(nowIso(), state.settings.techDueDays))
+  const [clientContact, setClientContact] = useState('')
   const [discount, setDiscount] = useState({ type: 'percentage', value: 0 })
   const [promo, setPromo] = useState(null)
   const [method, setMethod] = useState(state.settings.paymentMethods[0] || 'Cash')
@@ -62,6 +85,21 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
   const changeDue =
     !splitting && method === 'Cash' && tendered ? money(Number(tendered) - totals.total) : null
 
+  /*
+   * Both dates are noon local, not midnight UTC, so a tablet west of Greenwich
+   * does not print the day before the one the operator picked. Moving the issue
+   * date moves the deadline with it: a job invoiced late is still due the agreed
+   * number of days after it was raised.
+   */
+  const applyIssueDay = (value) => {
+    if (!value) return
+    const iso = new Date(`${value}T12:00:00`).toISOString()
+    setIssuedAt(iso)
+    setDueDate(dueDateFor(iso, state.settings.techDueDays))
+  }
+
+  const applyDueDay = (value) => setDueDate(value ? new Date(`${value}T12:00:00`).toISOString() : '')
+
   const complete = () => {
     setError('')
     setBusy(true)
@@ -86,6 +124,9 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
         amountPaid: !splitting && partPayment ? paidNowValue : null,
         overrideOversell: Boolean(oversellApproval),
         overrideBy: oversellApproval,
+        ...(tech
+          ? { profile: TECH_PROFILE, clientContact: clientContact.trim(), issuedAt, dueDate }
+          : {}),
       })
       onComplete(order)
     } catch (err) {
@@ -94,11 +135,14 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
     }
   }
 
-  // The discount ceiling is enforced, not just flagged.
+  // The discount ceiling is enforced, not just flagged. A tech invoice also has
+  // to say who it is billed to, so it cannot proceed on a walk-in.
   const paymentReady = splitting ? splitAllocated > 0 : Boolean(method)
   const canAdvance =
     step === 0
-      ? Boolean(customer) || walkIn
+      ? tech
+        ? Boolean(customer)
+        : Boolean(customer) || walkIn
       : step === 1
         ? !overDiscountLimit
         : paymentReady && !overDiscountLimit
@@ -108,10 +152,12 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
       open
       onClose={onClose}
       size="lg"
-      title={`Checkout · ${STEPS[step]}`}
-      subtitle={`${totals.itemCount} item${totals.itemCount === 1 ? '' : 's'} · ${currency(totals.total)}${
-        online ? '' : ' · offline — will sync automatically'
-      }`}
+      title={`${tech ? 'Invoice' : 'Checkout'} · ${steps[step]}`}
+      subtitle={`${
+        tech
+          ? `${cart.length} service${cart.length === 1 ? '' : 's'}`
+          : `${totals.itemCount} item${totals.itemCount === 1 ? '' : 's'}`
+      } · ${currency(totals.total)}${online ? '' : ' · offline — will sync automatically'}`}
       footer={
         <>
           <button
@@ -130,14 +176,14 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
               {busy
                 ? 'Saving…'
                 : isPending
-                  ? `Take ${currency(paidNowValue)} · hold balance`
-                  : `Complete sale · ${currency(totals.total)}`}
+                  ? `Take ${currency(paidNowValue)} · ${tech ? 'bill the balance' : 'hold balance'}`
+                  : `${tech ? 'Issue invoice' : 'Complete sale'} · ${currency(totals.total)}`}
             </button>
           )}
         </>
       }
     >
-      <StepBar step={step} onJump={setStep} />
+      <StepBar steps={steps} step={step} onJump={setStep} />
 
       {oversellApproval && (
         <div className="badge badge-warn" style={{ padding: '10px 14px', borderRadius: 12, whiteSpace: 'normal' }}>
@@ -152,19 +198,34 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
       )}
 
       {step === 0 && (
-        <CustomerStep
-          customer={customer}
-          onSelect={(next) => {
-            setCustomer(next)
-            setWalkIn(false)
-            setStep(1)
-          }}
-          onWalkIn={() => {
-            setCustomer(null)
-            setWalkIn(true)
-            setStep(1)
-          }}
-        />
+        <>
+          <CustomerStep
+            tech={tech}
+            customer={customer}
+            onSelect={(next) => {
+              setCustomer(next)
+              setWalkIn(false)
+              // A tech invoice still has its dates on this step, so it waits for
+              // the operator to press Continue rather than jumping ahead.
+              if (!tech) setStep(1)
+            }}
+            onWalkIn={() => {
+              setCustomer(null)
+              setWalkIn(true)
+              if (!tech) setStep(1)
+            }}
+          />
+          {tech && (
+            <InvoiceDetails
+              contact={clientContact}
+              setContact={setClientContact}
+              issuedAt={issuedAt}
+              dueDate={dueDate}
+              onIssueDay={applyIssueDay}
+              onDueDay={applyDueDay}
+            />
+          )}
+        </>
       )}
 
       {step === 1 && (
@@ -203,16 +264,17 @@ export default function CheckoutModal({ cart, oversellApproval, onClose, onCompl
           splitParts={splitParts}
           setSplitParts={setSplitParts}
           splitAllocated={splitAllocated}
+          tech={tech}
         />
       )}
     </Modal>
   )
 }
 
-function StepBar({ step, onJump }) {
+function StepBar({ steps, step, onJump }) {
   return (
     <div className="row" style={{ gap: 6 }}>
-      {STEPS.map((label, index) => (
+      {steps.map((label, index) => (
         <button
           key={label}
           className="grow"
@@ -244,7 +306,7 @@ function StepBar({ step, onJump }) {
 
 /* ------------------------------------------------------------- customer */
 
-function CustomerStep({ customer, onSelect, onWalkIn }) {
+function CustomerStep({ customer, onSelect, onWalkIn, tech }) {
   const { state, actions } = useApp()
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
@@ -269,7 +331,7 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
 
   const save = () => {
     if (!draft.name.trim()) {
-      setError('A name is required.')
+      setError(tech ? 'Who is being invoiced? A name is required.' : 'A name is required.')
       return
     }
     if (!draft.whatsapp.trim() && !draft.email.trim()) {
@@ -286,22 +348,26 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
       consentAt: draft.marketingConsent ? new Date().toISOString() : null,
       notes: '',
     })
+    // Back to the list with the new client selected — coming "back" to this step
+    // must not reopen a form whose work is already saved.
+    setCreating(false)
+    setError('')
     onSelect(created)
   }
 
   if (creating) {
     return (
       <div className="col">
-        <Field label="Full name">
+        <Field label={tech ? 'Client or company' : 'Full name'}>
           <input
             className="input"
             value={draft.name}
             autoFocus
             onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-            placeholder="Amina Hassan"
+            placeholder={tech ? 'Brew & Bean Ltd' : 'Amina Hassan'}
           />
         </Field>
-        <Field label="WhatsApp number" hint="Used to deliver the receipt.">
+        <Field label="WhatsApp number" hint={tech ? 'Where the invoice is sent.' : 'Used to deliver the receipt.'}>
           <input
             className="input"
             value={draft.whatsapp}
@@ -326,10 +392,16 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
             checked={draft.marketingConsent}
             onChange={(event) => setDraft({ ...draft, marketingConsent: event.target.checked })}
           />
-          <span className="small">{state.settings.marketingConsentText}</span>
+          <span className="small">
+            {tech
+              ? state.settings.techMarketingConsentText
+              : state.settings.marketingConsentText}
+          </span>
         </label>
         <p className="small muted" style={{ margin: 0 }}>
-          The receipt for this purchase is sent either way — this consent only covers future marketing.
+          {tech
+            ? 'This invoice is sent either way — the consent only covers future marketing.'
+            : 'The receipt for this purchase is sent either way — this consent only covers future marketing.'}
         </p>
 
         {error && <div className="small" style={{ color: 'var(--danger)' }}>{error}</div>}
@@ -339,7 +411,7 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
             Back
           </button>
           <button className="btn btn-primary grow" onClick={save}>
-            Save &amp; continue
+            {tech ? 'Save client' : 'Save & continue'}
           </button>
         </div>
       </div>
@@ -350,18 +422,20 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
     <div className="col">
       <input
         className="input"
-        placeholder="Search by name, phone or email"
+        placeholder={tech ? 'Search saved clients' : 'Search by name, phone or email'}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         autoComplete="off"
       />
 
       <div className="row" style={{ gap: 8 }}>
-        <button className="btn grow" onClick={onWalkIn}>
-          Walk-in customer
-        </button>
+        {!tech && (
+          <button className="btn grow" onClick={onWalkIn}>
+            Walk-in customer
+          </button>
+        )}
         <button className="btn btn-primary grow" onClick={() => setCreating(true)}>
-          + New customer
+          + New {tech ? 'client' : 'customer'}
         </button>
       </div>
 
@@ -386,9 +460,59 @@ function CustomerStep({ customer, onSelect, onWalkIn }) {
         ))}
         {matches.length === 0 && (
           <p className="small muted center" style={{ margin: '10px 0' }}>
-            No customer matches that search.
+            {`No ${tech ? 'client' : 'customer'} matches that search.`}
           </p>
         )}
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ dates */
+
+/**
+ * The dates a service invoice is asked to carry.
+ *
+ * A stall sale is paid at the counter and needs neither of these. An invoice for
+ * marketing work usually arrives after the work, states who to ask about it, and
+ * asks for payment within a term the business sets in Admin.
+ */
+function InvoiceDetails({ contact, setContact, issuedAt, dueDate, onIssueDay, onDueDay }) {
+  const { state } = useApp()
+  return (
+    <div className="card" style={{ display: 'grid', gap: 12, background: 'var(--surface-2)' }}>
+      <Field label="Contact for this invoice" hint="Printed under the client name">
+        <input
+          className="input"
+          value={contact}
+          maxLength={60}
+          onChange={(event) => setContact(event.target.value)}
+          placeholder="accounts@brewbean.co · Amina"
+        />
+      </Field>
+      <div className="row wrap" style={{ gap: 12 }}>
+        <div className="grow" style={{ minWidth: 150 }}>
+          <Field label="Issued on">
+            <input className="input" type="date" value={localDay(issuedAt)} onChange={(e) => onIssueDay(e.target.value)} />
+          </Field>
+        </div>
+        <div className="grow" style={{ minWidth: 150 }}>
+          <Field
+            label="Payment due"
+            hint={
+              state.settings.techDueDays > 0
+                ? `Moves with the issue date, ${state.settings.techDueDays} days ahead`
+                : 'No term set yet — Admin → Tareez Tech'
+            }
+          >
+            <input
+              className="input"
+              type="date"
+              value={dueDate ? localDay(dueDate) : ''}
+              onChange={(e) => onDueDay(e.target.value)}
+            />
+          </Field>
+        </div>
       </div>
     </div>
   )
@@ -616,6 +740,7 @@ function PaymentStep({
   splitParts,
   setSplitParts,
   splitAllocated,
+  tech = false,
 }) {
   const currency = useCurrency()
   const splitting = paymentMode === 'split'
@@ -674,7 +799,7 @@ function PaymentStep({
         <>
           <Field
             label="Amount received now"
-            hint="The rest is held as a balance due and the sale is saved as Pending."
+            hint={`The rest is held as a balance due and the ${tech ? 'invoice' : 'sale'} is saved as Pending.`}
           >
             <input
               className="input"
@@ -712,7 +837,9 @@ function PaymentStep({
                 </span>
               </div>
               <div className="small" style={{ color: '#a9660b', marginTop: 4 }}>
-                Stock leaves with the customer now. Settle the balance from the Sales page.
+                {tech
+                  ? 'Nothing is taken out of stock — the rest stays owed until settled from the Sales page.'
+                  : 'Stock leaves with the customer now. Settle the balance from the Sales page.'}
               </div>
             </div>
           )}
@@ -770,7 +897,7 @@ function PaymentStep({
 
       <div className="card" style={{ background: 'var(--surface-2)' }}>
         <div className="total-line">
-          <span>Customer</span>
+          <span>{tech ? 'Client' : 'Customer'}</span>
           <span>{customer?.name || 'Walk-in Customer'}</span>
         </div>
         <div className="total-line">

@@ -59,6 +59,42 @@ export const DEFAULT_SETTINGS = {
   // Stitching services sold alongside the cloth: `{ id, name, price }`.
   // Added to a sale from the till, never stocked.
   stitching: [],
+  /* -------------------------------------------------------- Tareez Tech */
+  // The marketing arm: a second invoice identity, its own numbered series, and
+  // its own list of services. Invoiced from the till like any other sale, but
+  // nothing here is stocked and nothing here is charged to Tareez Fashion Ltd.
+  // Contact details are deliberately blank — they are the company's to fill in,
+  // and inventing a VAT number or an address would put it on a real invoice.
+  techBusiness: {
+    name: 'Tareez Tech',
+    legalName: 'Tareez Tech',
+    tagline: 'Marketing & Digital Services',
+    phone: '',
+    email: '',
+    website: '',
+    address: '',
+    vatNumber: '',
+    logo: '',
+  },
+  // `invoicePrefix` above belongs to the fashion side; a marketing invoice has
+  // its own series so the two businesses never share a number line.
+  techInvoicePrefix: 'TT',
+  // Services the till can invoice: `{ id, name, price, note }`. Seeded at zero —
+  // a price list is the business's to set, and the till lets any job be quoted
+  // over the top of it anyway.
+  techServices: [
+    { id: 'tsc_web', name: 'Website development', price: 0, note: '' },
+    { id: 'tsc_social', name: 'Social media management', price: 0, note: 'Monthly retainer' },
+    { id: 'tsc_video', name: 'Video editing', price: 0, note: '' },
+    { id: 'tsc_ads', name: 'Performance marketing (Meta Ads)', price: 0, note: 'Monthly management fee' },
+  ],
+  // Days from the issue date before a Tareez Tech invoice is late. The till
+  // offers this as the default due date and the cashier can move it.
+  techDueDays: 14,
+  // The stall's consent line talks about collections and exhibitions, which is
+  // not what a marketing client is opting into.
+  techMarketingConsentText:
+    'I would like Tareez Tech to contact me about campaigns, offers and events.',
   terms:
     'Items may be returned within 14 days with this receipt. Sale items and custom pieces are final. Thank you for supporting Tareez.',
   marketingConsentText:
@@ -99,7 +135,7 @@ export async function buildSeedState() {
     notifications: [],
     // Ids this device has deleted, so a pull cannot put them back.
     tombstones: {},
-    counters: { invoice: 1 },
+    counters: { invoice: 1, techInvoice: 1 },
     outbox: [],
     seededAt: new Date().toISOString(),
   }
