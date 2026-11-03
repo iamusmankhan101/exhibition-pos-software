@@ -35,10 +35,16 @@ const BAND_TOP = 106.4
 const BAND_H = 11.8
 const MIN_ROWS = 4
 
-/** 6500 stays 6500; only real fractions carry decimals, as on the template. */
+/** 6500 prints as 6,500; only real fractions carry decimals, as on the template. */
 export function amount(value) {
   const number = Math.round(Number(value || 0) * 100) / 100
-  return Number.isInteger(number) ? String(number) : number.toFixed(2)
+  const decimals = Number.isInteger(number) ? 0 : 2
+  // Grouped the same way the till shows it, so a client reading £265,000.00 on
+  // screen is not handed an invoice that says 265000.
+  return number.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
 }
 
 function issuedDate(iso) {

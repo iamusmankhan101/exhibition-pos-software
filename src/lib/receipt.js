@@ -8,7 +8,7 @@
  */
 
 import QRCode from 'qrcode'
-import { formatDate } from './format.js'
+import { formatDate, formatMoney } from './format.js'
 import { invoiceBusiness, isTechOrder } from './domain.js'
 
 const MAX_FRAGMENT = 1800
@@ -177,7 +177,7 @@ export function receiptUrl(order, settings, exhibitionName, customer) {
  */
 export function receiptMessage(order, settings, url) {
   const symbol = settings.currencySymbol
-  const total = `${symbol}${Number(order.total).toFixed(2)}`
+  const total = formatMoney(order.total, symbol)
   const tech = isTechOrder(order)
   return [
     // A client buying a campaign is not a shopper at a stall, and this line is

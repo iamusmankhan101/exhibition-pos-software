@@ -6,6 +6,7 @@
  */
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { amount } from './invoiceLayout.js'
 
 const drawn = { text: [], images: 0, height: 0 }
 
@@ -125,12 +126,13 @@ describe('buildReceiptImage', () => {
     expect(text).toContain('EMBROIDERED SCARF × 2')
     expect(text).toContain('SILK ABAYA')
     expect(text).toContain('TOTAL')
-    // Unit price, line total for 2 × 2000, subtotal with the code, and the total.
-    expect(drawn.text).toContain('2000')
-    expect(drawn.text).toContain('4000')
-    expect(drawn.text).toContain('PKR 5500')
-    expect(drawn.text).toContain('5500')
-    expect(text).toContain('was 2500')
+    // Unit price, line total for 2 × 2,000, subtotal with the code, and the
+    // total — grouped, exactly as the till shows them.
+    expect(drawn.text).toContain('2,000')
+    expect(drawn.text).toContain('4,000')
+    expect(drawn.text).toContain('PKR 5,500')
+    expect(drawn.text).toContain('5,500')
+    expect(text).toContain('was 2,500')
     expect(text).toContain('Thank you!')
   })
 
@@ -173,7 +175,8 @@ describe('buildReceiptImage', () => {
     await buildReceiptImage({ ...data, amountPaid: 3000, balanceDue: 2500, status: 'Partially Paid' })
     const text = everything()
     expect(text).toContain('Balance due')
-    expect(drawn.text).toContain('2500')
+    expect(drawn.text).toContain('2,500')
+    expect(drawn.text).toContain('3,000')
     expect(text).toContain('PARTIALLY PAID')
   })
 })
@@ -203,5 +206,14 @@ describe('copyReceiptImage', () => {
 
     await expect(copyReceiptImage(Promise.resolve({}))).resolves.toBe(false)
     delete globalThis.ClipboardItem
+  })
+})
+
+describe('invoice money', () => {
+  it('groups thousands and only shows decimals when there is a fraction', () => {
+    expect(amount(45)).toBe('45')
+    expect(amount(240000)).toBe('240,000')
+    expect(amount(1234567.891)).toBe('1,234,567.89')
+    expect(amount(0)).toBe('0')
   })
 })
